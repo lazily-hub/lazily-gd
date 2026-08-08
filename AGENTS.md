@@ -40,7 +40,17 @@ The **repo root is the addon host**, and `addons/lazily/` is what ships:
 The consumer-facing folder is `addons/lazily/`, not `addons/lazily-gd/` — a
 project only ever has one.
 
-## Test framework: gdUnit4 (pinned)
+## Test framework: gdUnit4, pinned at v5.1.1
+
+**Not the newest release, and the pin is load-bearing.** gdUnit4 v6.x does not
+compile on the 4.4 floor: on 4.4.1 it fails to resolve its own classes and then
+**hangs instead of exiting**, so CI burns its job limit rather than reporting a
+failure. Upstream's compatibility table row listing `v4.3, v4.4, v4.4.1` covers
+the **v5.x** line — reading it as "gdUnit4 supports 4.4" and pinning v6 is the
+mistake to avoid. Verified both directions: v5.1.1 passes on 4.4.1 (the CI floor)
+and on 4.7.1 (a current engine). Raising the Godot floor is what should unlock
+v6, not bumping the framework pin on its own.
+
 
 Chosen over GUT for a reason specific to this binding: gdUnit4 reports **orphan
 nodes** per test. This binding's one novel problem is that `RefCounted` has no
@@ -62,6 +72,10 @@ count out of the run and fails when it is zero or unreadable, so "no tests ran"
 reports as missing EVIDENCE rather than as success. Every binding in this family
 has a version of this guard; do not remove it, and re-drive it (point `-a` at an
 empty directory) after changing how the suite is invoked.
+
+Both the import and the test run are wrapped in `timeout`. A hang is a distinct
+failure mode from a red test and needs its own guard — an incompatible framework
+never exits, and an unbounded CI job reports nothing at all.
 
 The import step before the run is not optional: without
 `.godot/global_script_class_cache.cfg` every `class_name` fails to resolve,

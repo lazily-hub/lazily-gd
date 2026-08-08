@@ -11,6 +11,14 @@ SHELL := /bin/bash
 GODOT ?= godot
 REPORTS := build/reports
 
+# A hang is a distinct failure mode from a red test, and it needs its own guard:
+# an incompatible gdUnit4 fails to compile its CLI and then never exits, which on
+# CI burns the job limit instead of reporting anything. Bounded so that failure
+# arrives as a diagnosable timeout.
+TIMEOUT ?= timeout
+IMPORT_TIMEOUT ?= 120
+TEST_TIMEOUT ?= 300
+
 all: check
 
 # Test dependency, not a shipping one. Idempotent, so `make check` on a clean
@@ -29,11 +37,13 @@ gdunit4:
 # gdUnit4's own CLI entrypoint included — fails to resolve, and the run dies as
 # a parse error that looks like a broken framework rather than a missing step.
 import: gdunit4
-	@$(GODOT) --headless --path . --import >/dev/null 2>&1 || true
+	@mkdir -p $(REPORTS)
+	@$(TIMEOUT) $(IMPORT_TIMEOUT) $(GODOT) --headless --path . --import \
+		> $(REPORTS)/import.log 2>&1 || true
 
 test: import
 	@mkdir -p $(REPORTS)
-	@set -o pipefail; $(GODOT) --headless --path . \
+	@set -o pipefail; $(TIMEOUT) $(TEST_TIMEOUT) $(GODOT) --headless --path . \
 		-s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
 		-a tests --continue --ignoreHeadlessMode 2>&1 | tee $(REPORTS)/gdunit4.log
 	@executed=$$(sed -e 's/\x1b\[[0-9;]*m//g' $(REPORTS)/gdunit4.log \

@@ -13,7 +13,17 @@ set -euo pipefail
 
 # Pinned. An unpinned test framework means a green suite can turn red without a
 # commit, and then the first question is always "did the framework move?".
-GDUNIT4_VERSION="${GDUNIT4_VERSION:-v6.2.0}"
+#
+# v5.1.1, NOT the newest release. gdUnit4 v6.x does not compile on the declared
+# Godot floor (4.4): on 4.4.1 it dies with "Could not resolve class
+# GdUnitCSIMessageWriter" and then HANGS instead of exiting, so CI burns its job
+# limit rather than failing. Upstream's compatibility table row listing
+# v4.3/v4.4/v4.4.1 covers the v5.x line specifically — reading it as "gdUnit4
+# supports 4.4" and then pinning v6 is the exact mistake this comment exists to
+# stop someone repeating. Verified: v5.1.1 passes on 4.4.1 (the CI floor) and on
+# 4.7.1 (a current engine), so bumping the floor is what should unlock v6, not a
+# version bump here on its own.
+GDUNIT4_VERSION="${GDUNIT4_VERSION:-v5.1.1}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$HERE/addons/gdUnit4"
