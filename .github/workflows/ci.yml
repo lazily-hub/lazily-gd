@@ -11,6 +11,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: lazily-gd
+
+      # The canonical corpus is a sibling checkout, and it is REQUIRED here. The
+      # coverage guard skips a missing corpus locally (a contributor without the
+      # sibling is not making a false claim) but hard-fails under CI, because
+      # reporting OK having replayed zero fixtures is the vacuous green the whole
+      # guard exists to prevent.
+      - uses: actions/checkout@v4
+        with:
+          repository: lazily-hub/lazily-spec
+          path: lazily-spec
 
       # Pinned to the DECLARED FLOOR (4.4), not to latest. The floor is what
       # consumers are promised; running CI on a newer engine would let a 4.5+
@@ -29,6 +41,7 @@ jobs:
       # CI failure and a local failure are the same failure. The vacuity guard in
       # `make check` is what keeps a green job from meaning "ran nothing".
       - name: make check
+        working-directory: lazily-gd
         run: make check
 
       - name: Upload gdUnit4 report
@@ -37,6 +50,6 @@ jobs:
         with:
           name: gdunit4-report
           path: |
-            build/reports/
-            reports/
+            lazily-gd/build/reports/
+            lazily-gd/reports/
           if-no-files-found: warn
