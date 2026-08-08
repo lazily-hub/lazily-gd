@@ -3,10 +3,10 @@
 Pure-GDScript binding of the [lazily](https://github.com/lazily-hub/lazily-spec)
 reactive-signals family, shipped as a Godot addon.
 
-> **Status: Phase 1 — cell kernel.** `Source`, `Computed`, `Effect`, `Context`
-> and `Scope` are implemented and tested. It is not yet a column in the
-> cross-language coverage matrix: a mark there must be backed by a fixture the
-> binding actually replays, and the conformance runner is Phase 2.
+> **Status: Phase 2 — conformance runner.** The cell kernel is implemented, and
+> 9 of the 21 canonical `reactive-graph` fixtures replay against it. Not yet a
+> column in the cross-language coverage matrix — see AGENTS.md for the ledger-format
+> blocker that has to be resolved first.
 
 ## Requirements
 

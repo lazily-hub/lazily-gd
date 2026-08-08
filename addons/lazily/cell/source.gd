@@ -3,7 +3,6 @@ class_name LazilySource
 extends LazilyCell
 
 var _value: Variant
-var _ctx: LazilyContext
 
 
 func _init(ctx: LazilyContext, value: Variant = null) -> void:

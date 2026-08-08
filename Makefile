@@ -6,7 +6,7 @@
 # bash this difference is invisible locally and only appears in CI.
 SHELL := /bin/bash
 
-.PHONY: all check test load-graph gdunit4 import clean
+.PHONY: all check test load-graph conformance-coverage gdunit4 import clean
 
 GODOT ?= godot
 REPORTS := build/reports
@@ -41,8 +41,15 @@ import: gdunit4
 	@$(TIMEOUT) $(IMPORT_TIMEOUT) $(GODOT) --headless --path . --import \
 		> $(REPORTS)/import.log 2>&1 || true
 
+# ABSOLUTE manifest path. The recorder runs inside the Godot process, whose
+# working directory is not this one — a relative path silently writes the
+# manifest somewhere nothing reads, and the guard then fails with "missing
+# evidence" while the suite is green.
+export LAZILY_CONFORMANCE_MANIFEST := $(CURDIR)/build/conformance-fixtures-loaded.txt
+
 test: import
-	@mkdir -p $(REPORTS)
+	@mkdir -p $(REPORTS) $(CURDIR)/build
+	@: > $(LAZILY_CONFORMANCE_MANIFEST)
 	@set -o pipefail; $(TIMEOUT) $(TEST_TIMEOUT) $(GODOT) --headless --path . \
 		-s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
 		-a tests --continue --ignoreHeadlessMode 2>&1 | tee $(REPORTS)/gdunit4.log
@@ -75,7 +82,10 @@ load-graph: import
 		exit 1; \
 	fi
 
-check: test load-graph
+conformance-coverage:
+	@scripts/check-conformance-coverage.sh
+
+check: test load-graph conformance-coverage
 
 clean:
 	rm -rf build addons/gdUnit4

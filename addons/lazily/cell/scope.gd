@@ -38,13 +38,20 @@ func own(cell: LazilyCell) -> LazilyCell:
 	return cell
 
 
-## Disarm: this scope will no longer tear down its members.
+## Disarm: release ownership without disposing anything.
 ##
-## Disarming disposes NOTHING. It is not a soft dispose, and calling it must
-## leave every member live and running.
+## Ownership is dropped IMMEDIATELY — owned count goes to zero at the disarm, not
+## later at teardown — while every member stays live, readable, and still wired
+## into the graph. Disarming is not a soft dispose.
 ## (`disarm_disposes_nothing.json`)
+##
+## Because a scope is the sole strong owner here, disarming hands that ownership
+## to the caller: whatever disarmed is now responsible for keeping the members
+## alive. Dropping every reference after a disarm collects them, which is the
+## honest consequence of weak back-edges rather than a bug.
 func disarm() -> void:
 	_armed = false
+	_members.clear()
 
 
 func is_armed() -> bool:

@@ -11,6 +11,51 @@ var _batch_depth := 0
 var _pending: Array[LazilyCell] = []
 var _pending_ids: Dictionary[int, bool] = {}
 
+## How many drain steps one flush may take before it is declared non-settling.
+## An effect that writes into its own dependency cone never settles, and the
+## contract is that the drain REPORTS exhaustion rather than spinning forever.
+var drain_bound := 10000
+## Observable, because "it did not settle" is a result a caller must be able to
+## read — not merely an error in a log.
+## (`feedback_drain_bound_reports_exhaustion.json`)
+var _drain_exhausted := false
+
+
+## Last read failure, or "" if the last read succeeded.
+##
+## Reads report failure through the context rather than only through
+## `push_error`, because a caller cannot observe a log line. A `Computed` whose
+## dependency was disposed fails here too, not just the disposed cell itself.
+var _read_error := ""
+## Re-entrancy guard for the drain. An effect body that writes would otherwise
+## start a nested flush, and the nested drain would consume the queue the outer
+## loop is counting — so a non-settling graph would spin forever instead of
+## reporting exhaustion.
+var _flushing := false
+
+
+func drain_exhausted() -> bool:
+	return _drain_exhausted
+
+
+func _record_read_error(kind: String) -> void:
+	_read_error = kind
+
+
+## Read and clear the pending read error.
+func take_read_error() -> String:
+	var e := _read_error
+	_read_error = ""
+	return e
+
+
+func has_read_error() -> bool:
+	return _read_error != ""
+
+
+func clear_drain_exhausted() -> void:
+	_drain_exhausted = false
+
 
 func source(value: Variant = null) -> LazilySource:
 	return LazilySource.new(self, value)
@@ -89,13 +134,22 @@ func _flush_if_not_batching() -> void:
 ## Draining re-entrantly rather than iterating a snapshot: an effect body may
 ## write, which schedules more work, and that work belongs to this same flush.
 func _flush() -> void:
+	if _flushing:
+		# A nested flush would drain the queue the outer loop is bounding, so a
+		# feedback effect would spin instead of reporting exhaustion. The outer
+		# loop picks up whatever this body scheduled.
+		return
+	_flushing = true
 	var guard := 0
 	while not _pending.is_empty():
 		guard += 1
-		if guard > 100000:
-			push_error("lazily: flush did not settle — a cycle is writing to its own dependency")
+		if guard > drain_bound:
+			# Exhaustion is REPORTED, not thrown away and not spun on. The graph
+			# is left settled-as-far-as-it-got and the caller can read the flag.
+			_drain_exhausted = true
 			_pending.clear()
 			_pending_ids.clear()
+			_flushing = false
 			return
 		var node: LazilyCell = _pending.pop_front()
 		_pending_ids.erase(node.get_instance_id())
@@ -105,3 +159,4 @@ func _flush() -> void:
 			(node as LazilyEffect).run()
 		elif node is LazilyComputed:
 			(node as LazilyComputed)._recompute()
+	_flushing = false

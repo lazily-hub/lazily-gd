@@ -6,13 +6,19 @@ independent design: when this repo and
 [lazily-spec](https://github.com/lazily-hub/lazily-spec) disagree, the spec wins
 and this repo is the finding.
 
-**Status: Phase 1 (cell kernel).** `Source` / `Computed` / `Effect` / `Context` /
-`Scope` are implemented under `addons/lazily/cell/`, with the load-graph
-invariant enforced. It is deliberately **not** a column in
-`lazily-spec/coverage.json` yet: a mark there must be backed by a fixture the
-binding actually replays, and the conformance runner is Phase 2. Claiming a
-column before the runner exists is the drift `check-coverage-claims.mjs` was
-written to catch.
+**Status: Phase 2 (conformance runner).** The cell kernel is implemented under
+`addons/lazily/cell/`, and the conformance runner replays **9 of the 21 canonical
+`reactive-graph` fixtures** — every one whose ops the Phase 1 vocabulary covers.
+
+It is still **not** a column in `lazily-spec/coverage.json`, and there is a
+concrete blocker rather than just remaining work. `check-coverage-claims.mjs`
+reads each binding's `KNOWN_UNCOVERED` and treats *absence from it* as "replayed".
+This repo's guard excuses 128 fixtures by unimplemented FAMILY instead of naming
+each one, so from lazily-spec's side those would read as replayed and lazily-gd
+could carry marks it has not earned. Reconcile the ledger format first — either
+emit a complete not-replayed list for the spec-side guard, or teach that guard
+about family excuses. Adding the column before then imports a false green into a
+CI-gated shared repo.
 
 Staged plan and the reasoning behind every decision below:
 `tasks/software/plan-lazily-gd.md` in the agent-loop workspace.
@@ -48,6 +54,33 @@ here rather than in a consumer's project.
   refreshing the chain on its way down.
 - **The tracked read is `read()`, not `get()`.** `Object.get(property)` is a
   Godot builtin and shadowing it would break `obj.get("prop")` for consumers.
+
+## The conformance runner
+
+`tests/conformance/` replays canonical fixtures from `../lazily-spec/conformance`
+by interpreting their own `steps`/`expect` data. It does **not** restate the
+expectations in GDScript: a hand-transcribed expectation is a second source of
+truth that drifts from the corpus silently.
+
+`fixture_loader.gd` records every fixture it opens into
+`LAZILY_CONFORMANCE_MANIFEST` at the moment it opens it, and
+`scripts/check-conformance-coverage.sh` reads that RUNTIME manifest. A fixture
+named in a comment, or transcribed into a test, is present in a grep while never
+being replayed — lazily-cpp's queue tests drifted exactly that way. Observing the
+read is the only proof.
+
+The guard states which families this binding **implements** rather than listing
+what it does not. An exclusion list needs editing every time the corpus grows,
+and the edit that never happens is the one that turns a gap green. A new family
+is excused automatically; a new `reactive-graph/` fixture fails until replayed or
+named in `KNOWN_UNCOVERED` with a reason.
+
+Re-drive it after changing the runner. Proven branches: empty manifest fails as
+missing evidence, a manifest entry naming no real file fails as a corrupt
+evidence channel, and dropping a replayed fixture fails as unexcused. Also
+perturb the kernel — making invalidation one-level-only must redden
+`transitive_invalidation_reaches_depth` at depth 2 and beyond. A replay that
+survives that perturbation is not replaying anything.
 
 ## The load-graph check
 

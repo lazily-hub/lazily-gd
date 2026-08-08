@@ -11,7 +11,6 @@
 class_name LazilyEffect
 extends LazilyCell
 
-var _ctx: LazilyContext
 var _fn: Callable
 var _deps: Array[LazilyCell] = []
 
@@ -27,7 +26,11 @@ func _read(_compute: LazilyCompute) -> Variant:
 	return null
 
 
-func _on_dependency_invalidated() -> void:
+func _on_dependency_invalidated(reactive: bool = true) -> void:
+	# A disposed dependency is not a new value. A surviving effect has nothing
+	# new to observe, so it must not fire.
+	if not reactive:
+		return
 	_ctx._schedule(self)
 
 

@@ -7,7 +7,6 @@
 class_name LazilyComputed
 extends LazilyCell
 
-var _ctx: LazilyContext
 var _fn: Callable
 var _value: Variant = null
 var _stale := true
@@ -52,14 +51,14 @@ func peek() -> Variant:
 	return _value
 
 
-func _on_dependency_invalidated() -> void:
+func _on_dependency_invalidated(reactive: bool = true) -> void:
 	if _stale:
 		# Already stale, so the cone below was marked when it became stale.
 		# Stopping here is what keeps invalidation linear instead of exponential.
 		return
 	_stale = true
-	_invalidate()
-	if _eager:
+	_invalidate(reactive)
+	if _eager and reactive:
 		_ctx._schedule(self)
 
 
@@ -71,11 +70,17 @@ func _recompute() -> void:
 	# this cell subscribed to a dependency it no longer reads.
 	_detach()
 	var compute := LazilyCompute.new(self, _ctx)
+	var had_error := _ctx != null and _ctx.has_read_error()
 	var next: Variant = _fn.call(compute)
 	_deps = compute._deps
 	# A failed compute must not be cached — the next read has to try again rather
-	# than serve a value the body never produced.
-	# (`failed_compute_is_never_cached.json`)
+	# than serve a value the body never produced. A read of a disposed dependency
+	# is such a failure, and it propagates: the cell that read it did not produce
+	# a value either.
+	# (`failed_compute_is_never_cached.json`, `read_after_dispose_is_an_error.json`)
+	if _ctx != null and _ctx.has_read_error() and not had_error:
+		_value = null
+		return
 	_value = next
 	_stale = false
 

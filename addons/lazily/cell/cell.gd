@@ -18,6 +18,11 @@ var _dependents: Dictionary[int, WeakRef] = {}
 
 var _disposed := false
 
+## The owning context, so a failed read can be REPORTED rather than only logged.
+## `push_error` is invisible to a caller; a graph that fails a read must be able
+## to say so.
+var _ctx: LazilyContext = null
+
 
 func is_disposed() -> bool:
 	return _disposed
@@ -28,6 +33,8 @@ func is_disposed() -> bool:
 func _assert_live(what: String) -> bool:
 	if _disposed:
 		push_error("lazily: %s on a disposed cell" % what)
+		if _ctx != null:
+			_ctx._record_read_error("read_after_dispose")
 		return false
 	return true
 
@@ -72,15 +79,20 @@ func dependent_count() -> int:
 ## cache-trusting read silently drops writes at depth 2 and deeper. Recursion
 ## stops at an already-stale cell, which is sound precisely because becoming
 ## stale is what propagates the mark onward.
-func _invalidate() -> void:
+## `reactive` separates the two reasons a cone goes stale. A WRITE is a value
+## change and must re-run effects. A DISPOSE invalidates cached values so a later
+## read cannot serve one derived from a cell that no longer exists — but it is
+## not a new value, and it must not make surviving effects fire.
+## (`disposal_does_not_run_surviving_effects.json`)
+func _invalidate(reactive: bool = true) -> void:
 	for node: LazilyCell in _live_dependents():
-		node._on_dependency_invalidated()
+		node._on_dependency_invalidated(reactive)
 
 
 ## Overridden by cells that cache. The base cell has nothing to invalidate, so it
 ## only forwards.
-func _on_dependency_invalidated() -> void:
-	_invalidate()
+func _on_dependency_invalidated(reactive: bool = true) -> void:
+	_invalidate(reactive)
 
 
 ## Value for a tracked read. Overridden by every concrete cell.
@@ -94,6 +106,11 @@ func dispose() -> void:
 		return
 	_disposed = true
 	_detach()
+	# Dependents must be invalidated BEFORE the edge set is dropped, or they keep
+	# serving a cached value derived from a cell that no longer exists — the read
+	# then succeeds instead of reporting `read_after_dispose`, and disposal looks
+	# like it worked. (`read_after_dispose_is_an_error.json`)
+	_invalidate(false)
 	_dependents.clear()
 
 
