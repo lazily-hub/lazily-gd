@@ -1,0 +1,22 @@
+; lazily-gd — Godot project used to RUN the suite. It is not what ships.
+;
+; What ships is `addons/lazily/`, dropped into a consumer's own project. This
+; file exists so `godot --headless` has something to open; keep it free of
+; anything the addon depends on, or the addon acquires a dependency on a project
+; setting no consumer will have set.
+
+config_version=5
+
+[application]
+
+config/name="lazily-gd"
+config/features=PackedStringArray("4.4", "GL Compatibility")
+run/disable_stdout=false
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gdUnit4/plugin.cfg")

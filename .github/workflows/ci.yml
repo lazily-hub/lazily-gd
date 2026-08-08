@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the DECLARED FLOOR (4.4), not to latest. The floor is what
+      # consumers are promised; running CI on a newer engine would let a 4.5+
+      # language feature land here and only break in a user's project.
+      # `plan-lazily-gd.md` records why the floor is 4.4.
+      - name: Install Godot 4.4.1
+        run: |
+          set -euo pipefail
+          curl -fsSL -o godot.zip \
+            https://github.com/godotengine/godot-builds/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          sudo install -m 755 Godot_v4.4.1-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+
+      # The suite runs through the same Makefile a developer runs locally, so a
+      # CI failure and a local failure are the same failure. The vacuity guard in
+      # `make check` is what keeps a green job from meaning "ran nothing".
+      - name: make check
+        run: make check
+
+      - name: Upload gdUnit4 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdunit4-report
+          path: |
+            build/reports/
+            reports/
+          if-no-files-found: warn

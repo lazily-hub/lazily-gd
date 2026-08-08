@@ -1,0 +1,17 @@
+# Godot
+.godot/
+*.translation
+
+# Test dependency, installed by scripts/install-gdunit4.sh. Vendoring it would
+# ship a test framework to every consumer who installs addons/lazily/.
+addons/gdUnit4/
+
+# gdUnit4 writes here; `make check` mirrors its log into build/reports/
+reports/
+build/
+
+# editor / OS
+.DS_Store
+*.swp
+.idea/
+.tsift/
