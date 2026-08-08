@@ -41,6 +41,14 @@ fi
 # Expressed as the families this binding IMPLEMENTS. Everything outside them is
 # excused automatically, so the list does not rot as the corpus grows; everything
 # inside them must be replayed or named in KNOWN_UNCOVERED with a reason.
+#
+# CROSS-REPO CONTRACT. lazily-spec's scripts/check-coverage-claims.mjs parses this
+# array by name to decide which canonical fixtures this ledger even speaks for.
+# Without it, that guard reads "absent from KNOWN_UNCOVERED" as "replayed" and all
+# 128 family-excused fixtures count as replayed — a `✅` on any of them passes.
+# Renaming this array, or replacing it with a different narrowing mechanism, must
+# be classified in that file in the same change. An unrecognized array here is a
+# hard failure there, on purpose.
 IMPLEMENTED_FAMILY_PREFIXES=(
   "reactive-graph/"
 )

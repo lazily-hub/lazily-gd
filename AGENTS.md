@@ -10,15 +10,24 @@ and this repo is the finding.
 `addons/lazily/cell/`, and the conformance runner replays **9 of the 21 canonical
 `reactive-graph` fixtures** — every one whose ops the Phase 1 vocabulary covers.
 
-It is still **not** a column in `lazily-spec/coverage.json`, and there is a
-concrete blocker rather than just remaining work. `check-coverage-claims.mjs`
-reads each binding's `KNOWN_UNCOVERED` and treats *absence from it* as "replayed".
-This repo's guard excuses 128 fixtures by unimplemented FAMILY instead of naming
-each one, so from lazily-spec's side those would read as replayed and lazily-gd
-could carry marks it has not earned. Reconcile the ledger format first — either
-emit a complete not-replayed list for the spec-side guard, or teach that guard
-about family excuses. Adding the column before then imports a false green into a
-CI-gated shared repo.
+`GDScript` is now the 10th column in `lazily-spec/coverage.json`: `~` on Reactive
+graph, `—` on all 28 other families. Partial, and visibly so — `~` is the mark
+the claim guard leaves unverified by design, which is the honest place for
+"implemented, but not this whole row."
+
+**The ledger format had to be fixed before the column could exist**, and the
+reason is worth keeping. `check-coverage-claims.mjs` reads each binding's
+`KNOWN_UNCOVERED` and treats *absence from it* as "replayed". This repo's guard
+excuses 128 fixtures by unimplemented FAMILY instead of naming each one, so to
+that parser lazily-gd read as "audits the whole corpus, declares 12 gaps" — and
+all 128 family-excused fixtures counted as replayed. It was demonstrated, not
+assumed: a `✅` on a `codec/` row passed the guard before the fix and fails after
+it. `IMPLEMENTED_FAMILY_PREFIXES` is now read spec-side alongside
+`REQUIRED_AREAS`, and an *unrecognized* array in this file is a hard failure
+there, so the next binding that invents a third narrowing mechanism cannot have
+it silently ignored. Renaming or removing `IMPLEMENTED_FAMILY_PREFIXES` here is a
+cross-repo change: classify the replacement in `check-coverage-claims.mjs` in the
+same breath.
 
 Staged plan and the reasoning behind every decision below:
 `tasks/software/plan-lazily-gd.md` in the agent-loop workspace.
