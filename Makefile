@@ -1,5 +1,11 @@
 # lazily-gd — build, test, and verification targets.
 
+# Not optional. The suite pipes godot through `tee`, so `pipefail` is what makes
+# a failing run fail instead of reporting `tee`'s exit code — and `/bin/sh` is
+# dash on Ubuntu, which has no `pipefail` at all. On a distro where /bin/sh is
+# bash this difference is invisible locally and only appears in CI.
+SHELL := /bin/bash
+
 .PHONY: all check test gdunit4 import clean
 
 GODOT ?= godot
