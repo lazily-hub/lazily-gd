@@ -3,10 +3,10 @@
 Pure-GDScript binding of the [lazily](https://github.com/lazily-hub/lazily-spec)
 reactive-signals family, shipped as a Godot addon.
 
-> **Status: Phase 0 — scaffold.** The reactive kernel is not implemented yet.
-> This repo currently establishes the harness, the engine floor, and CI. It is
-> not yet a column in the cross-language coverage matrix, because a column of
-> `—` marks would claim a binding that does not exist.
+> **Status: Phase 1 — cell kernel.** `Source`, `Computed`, `Effect`, `Context`
+> and `Scope` are implemented and tested. It is not yet a column in the
+> cross-language coverage matrix: a mark there must be backed by a fixture the
+> binding actually replays, and the conformance runner is Phase 2.
 
 ## Requirements
 
@@ -34,6 +34,31 @@ The design argument points the same way. The wasm-hostile parts of `lazily-cpp`
 (`transport.hpp`, `reliable_sync.hpp`) are exactly what a Godot SDK should
 replace with Godot's own `WebSocketPeer`, so what you actually want from lazily
 here is the layer with zero native dependencies.
+
+## Usage
+
+```gdscript
+var ctx := LazilyContext.new()
+
+var celsius := ctx.source(20)
+var fahrenheit := ctx.computed(func(k: LazilyCompute) -> float:
+	return (k.read(celsius) as float) * 9.0 / 5.0 + 32.0)
+
+# Effects are owned by a scope, never unowned: back-edges in this binding are
+# weak, so an unowned Effect would be collected rather than run.
+var scope := ctx.scope()
+scope.effect(func(k: LazilyCompute) -> void:
+	print("%d C = %s F" % [k.read(celsius), k.read(fahrenheit)]))
+
+celsius.set_value(100)          # effect re-runs
+ctx.batch(func() -> void:       # many writes, one flush
+	celsius.set_value(0))
+scope.dispose()                 # tears down members in reverse creation order
+```
+
+Reads inside a compute go through `k.read(cell)`, which forms the dependency
+edge. `ctx.peek(cell)` reads without forming one. The tracked read is `read()`
+rather than `get()` because `Object.get(property)` is a Godot builtin.
 
 ## Development
 

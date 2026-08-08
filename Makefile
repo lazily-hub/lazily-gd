@@ -6,7 +6,7 @@
 # bash this difference is invisible locally and only appears in CI.
 SHELL := /bin/bash
 
-.PHONY: all check test gdunit4 import clean
+.PHONY: all check test load-graph gdunit4 import clean
 
 GODOT ?= godot
 REPORTS := build/reports
@@ -62,7 +62,20 @@ test: import
 	fi; \
 	echo "gdUnit4: $$executed test case(s) executed"
 
-check: test
+# Its own Godot process on purpose: inside the suite the kernel is already
+# resident, so the measurement would answer about the harness, not the kernel.
+load-graph: import
+	@out="$$($(TIMEOUT) $(IMPORT_TIMEOUT) $(GODOT) --headless --path . \
+		-s res://scripts/load_graph_check.gd 2>&1)"; \
+	echo "$$out" | grep -E '^(load-graph OK|FAIL)' || true; \
+	if echo "$$out" | grep -q '^FAIL'; then exit 1; fi; \
+	if ! echo "$$out" | grep -q '^load-graph OK'; then \
+		echo "ERROR: load-graph check produced no verdict — treating as failure." >&2; \
+		echo "$$out" >&2; \
+		exit 1; \
+	fi
+
+check: test load-graph
 
 clean:
 	rm -rf build addons/gdUnit4

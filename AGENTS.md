@@ -6,11 +6,13 @@ independent design: when this repo and
 [lazily-spec](https://github.com/lazily-hub/lazily-spec) disagree, the spec wins
 and this repo is the finding.
 
-**Status: Phase 0 (scaffold).** The kernel is not implemented yet. This repo
-currently proves only that the harness runs and that the engine floor holds. It
-is deliberately not a column in `lazily-spec/coverage.json` yet — a column of
-`—` marks would claim a binding exists. That lands in Phase 1 alongside coverage
-rows 0 and 15.
+**Status: Phase 1 (cell kernel).** `Source` / `Computed` / `Effect` / `Context` /
+`Scope` are implemented under `addons/lazily/cell/`, with the load-graph
+invariant enforced. It is deliberately **not** a column in
+`lazily-spec/coverage.json` yet: a mark there must be backed by a fixture the
+binding actually replays, and the conformance runner is Phase 2. Claiming a
+column before the runner exists is the drift `check-coverage-claims.mjs` was
+written to catch.
 
 Staged plan and the reasoning behind every decision below:
 `tasks/software/plan-lazily-gd.md` in the agent-loop workspace.
@@ -24,6 +26,50 @@ against. **4.5's `@abstract` is therefore not available** — the base kind that
 stubs, not an abstract one. Do not reach for a 4.5+ feature because the engine
 you happen to run supports it; CI pins 4.4.1 precisely so that mistake fails
 here rather than in a consumer's project.
+
+## Kernel invariants (do not regress these)
+
+- **No ambient context.** The ctx is threaded explicitly; there is no "current
+  context" global and no current-node stack. Dependency attribution comes from
+  the `LazilyCompute` view threaded into each recompute, so a read cannot miss
+  tracking and an untracked read cannot silently gain it.
+- **No observers — only Effects.** Never add a subscribe / listener / callback
+  registry to a reactive type. An observer registry is a second edge set that
+  survives invalidation, which is what the edge index exists to prevent.
+- **Back-edges are weak, forward edges strong**, and `LazilyScope` is the sole
+  strong owner of Effects. `ctx.effect()` therefore refuses: an unowned Effect
+  would be collected rather than run, failing silently. Use `ctx.scope().effect()`.
+- **Prune before any edge-count read.** GDScript has no finalizer hook, so dead
+  `WeakRef`s are pruned in `_live_dependents()`. Counting without pruning reads
+  edges high — route every count through `dependent_count()`.
+- **Invalidation is transitive, never one level.** A one-level mark plus a
+  cache-trusting read drops writes at depth 2. `test_deepest_read_alone_is_fresh`
+  is the assertion that catches it; the other depth test can mask the defect by
+  refreshing the chain on its way down.
+- **The tracked read is `read()`, not `get()`.** `Object.get(property)` is a
+  Godot builtin and shadowing it would break `obj.get("prop")` for consumers.
+
+## The load-graph check
+
+`make load-graph` runs `scripts/load_graph_check.gd` as **its own headless Godot
+process** and asserts that loading the cell kernel loads no other family. The
+isolation is load-bearing: inside the suite process everything is already
+resident, so the measurement would answer about the harness rather than the
+kernel.
+
+It measures rather than reads. `ResourceLoader.get_dependencies()` returns `[]`
+for GDScript — it models `.import`-style resource deps, not `class_name` /
+`extends` / `preload` edges — and scanning source for `preload(` proves only what
+is written. This observes what the engine actually resolved, via
+`ResourceLoader.has_cached()`.
+
+It refuses to pass vacuously: if nothing outside `KERNEL_CLOSURE` exists to
+assert against, it fails rather than reporting OK over an empty set. Re-drive it
+after touching the kernel's imports by adding a cross-family `preload()` and
+confirming it fails.
+
+`preload()` is eager and transitive, which is why this lands in Phase 1 rather
+than late — retrofitting layering after six families exist is the expensive order.
 
 ## Layout
 
