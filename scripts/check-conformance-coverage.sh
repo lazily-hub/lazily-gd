@@ -57,13 +57,6 @@ IMPLEMENTED_FAMILY_PREFIXES=(
 # entries that must carry a reason, because their family is one this binding
 # claims to support.
 KNOWN_UNCOVERED=(
-  # merge_cell is the multi-write ingress mechanism; the merge family is not
-  # implemented, so these read nothing the kernel can express yet.
-  "reactive-graph/exact_fold_paths_stay_exact.json"
-  "reactive-graph/merge_cell_acquires_no_dependency_edge.json"
-  "reactive-graph/merge_feed_through_a_formula_coalesces.json"
-  "reactive-graph/merge_folds_synchronously_in_batch.json"
-  "reactive-graph/merge_per_settled_cone_not_per_write.json"
   # `fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle` bulk ops are
   # not implemented; id recycling needs explicit work beyond instance ids.
   "reactive-graph/churn_returns_to_baseline.json"

@@ -25,6 +25,13 @@ const REPLAYED := [
 	"reactive-graph/failed_compute_is_never_cached.json",
 	# shape=scenarios: several independent runs in one fixture.
 	"reactive-graph/scope_teardown_equals_fold_of_disposals.json",
+	# `merge_cell` / `merges_into`: a source cell folding under a policy, fed by
+	# an effect that owns the edge. The accumulator acquires none.
+	"reactive-graph/merge_cell_acquires_no_dependency_edge.json",
+	"reactive-graph/merge_folds_synchronously_in_batch.json",
+	"reactive-graph/merge_per_settled_cone_not_per_write.json",
+	"reactive-graph/merge_feed_through_a_formula_coalesces.json",
+	"reactive-graph/exact_fold_paths_stay_exact.json",
 ]
 
 

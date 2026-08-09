@@ -25,6 +25,10 @@ const KERNEL_CLOSURE: Array[String] = [
 	"res://addons/lazily/cell/cell.gd",
 	"res://addons/lazily/cell/compute.gd",
 	"res://addons/lazily/cell/source.gd",
+	# The merge algebra is part of the CELL kernel, not a family above it: a
+	# source cell folds under a policy, and KeepLatest is the default rather than
+	# an opt-in, so every Source drags this in by construction.
+	"res://addons/lazily/cell/merge_policy.gd",
 	"res://addons/lazily/cell/computed.gd",
 	"res://addons/lazily/cell/effect.gd",
 	"res://addons/lazily/cell/scope.gd",

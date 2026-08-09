@@ -61,6 +61,18 @@ func source(value: Variant = null) -> LazilySource:
 	return LazilySource.new(self, value)
 
 
+## A source cell whose [method LazilySource.merge] folds under `policy`.
+##
+## With a policy other than KeepLatest this is what the corpus calls a merge
+## cell. It is the SAME class: a merge cell is an ordinary source node, so
+## degree, read and dispose all behave unchanged, and the only thing that makes
+## it an accumulator is the fold. `merge_cell_acquires_no_dependency_edge.json`
+## asserts exactly that — the cell acquires no edge even when fed from a
+## reactive, because the edge belongs to the effect doing the feeding.
+func source_with(value: Variant, policy: LazilyMergePolicy) -> LazilySource:
+	return LazilySource.new(self, value, policy)
+
+
 func computed(fn: Callable) -> LazilyComputed:
 	return LazilyComputed.new(self, fn)
 

@@ -17,6 +17,14 @@ var effects: Dictionary[String, LazilyEffect] = {}
 var effect_scope_of: Dictionary[String, String] = {}
 ## Ordered record of which effect bodies ran since the last checkpoint.
 var observed: Array[String] = []
+
+## Cumulative fold count per merge cell, never reset — `merges_of` is a running
+## total from scenario start, mirroring `computes_of`, so a fixture can assert
+## that a step did NOT fold by repeating the previous step's number.
+var merges: Dictionary[String, int] = {}
+
+## Cumulative run count per effect, for `computes_of` on an effect id.
+var effect_runs: Dictionary[String, int] = {}
 var cleanup_order: Array[String] = []
 ## Effects the fixture declared as writing into their own dependency cone.
 var _root_scope: LazilyScope
@@ -119,6 +127,27 @@ func _apply(op: Dictionary, i: int) -> void:
 	match t:
 		"cell":
 			cells[op["id"]] = ctx.source(op.get("value"))
+		"merge_cell":
+			# A merge cell is an ordinary source node whose writes fold under a
+			# policy — same class, so degree/read/dispose are unchanged. The
+			# counter is registered HERE so `merges_of` on a cell that has folded
+			# nothing reads 0 rather than failing as unknown, which is what
+			# `merge_per_settled_cone_not_per_write.json` asserts on its first
+			# step ("construction alone folds nothing").
+			cells[op["id"]] = ctx.source_with(op.get("value"), _policy_of(op, i))
+			if not merges.has(op["id"]):
+				merges[op["id"]] = 0
+		"merge":
+			# An explicit merge() call — exact, one fold per call. Not emitted by
+			# the five landed fixtures (which fold inside a batch or through a
+			# feed effect), but accepted so a future single-fold fixture is not an
+			# unknown op silently routed somewhere else.
+			var mtgt: Variant = cells.get(op["id"])
+			if mtgt == null:
+				_fail(i, "merge names unknown cell '%s'" % op["id"])
+				return
+			merges[op["id"]] = int(merges.get(op["id"], 0)) + 1
+			(mtgt as LazilySource).merge(op.get("value"))
 		"computed":
 			var c := ctx.computed(_derivation(op))
 			cells[op["id"]] = c
@@ -153,6 +182,7 @@ func _apply(op: Dictionary, i: int) -> void:
 			# `signal_materializes_once_per_batch` indistinguishable from the
 			# per-write defect it exists to catch.
 			var writes: Array = op.get("writes", [])
+			var batch_merges: Array = op.get("merges", [])
 			ctx.batch(func() -> Variant:
 				for w: Dictionary in writes:
 					var wt: Variant = cells.get(w["id"])
@@ -160,6 +190,19 @@ func _apply(op: Dictionary, i: int) -> void:
 						_fail(i, "batch write names unknown cell '%s'" % w["id"])
 						continue
 					(wt as LazilySource).set_value(w.get("value"))
+				# Explicit merges inside a batch fold SYNCHRONOUSLY — only the
+				# downstream cascade defers to batch exit. Counting here is exact
+				# for the same reason the fold is: the caller decides how many ops
+				# exist. A binding that deferred the FOLD as well shows fewer
+				# merges than calls and, under Sum, the wrong value too
+				# (`merge_folds_synchronously_in_batch.json`).
+				for m: Dictionary in batch_merges:
+					var mt: Variant = cells.get(m["id"])
+					if mt == null:
+						_fail(i, "batch merge names unknown cell '%s'" % m["id"])
+						continue
+					merges[m["id"]] = int(merges.get(m["id"], 0)) + 1
+					(mt as LazilySource).merge(m.get("value"))
 				return null)
 		"effect":
 			_make_effect(op, i)
@@ -231,10 +274,27 @@ func _derivation(op: Dictionary) -> Callable:
 		return total
 
 
+## Resolve a merge cell's declared policy.
+##
+## The corpus only ever folds under `Sum`. An unknown name is refused rather
+## than defaulted: folding under the wrong algebra satisfies every COUNT
+## assertion while landing on the wrong value, which is the one failure a
+## counting-only runner cannot see.
+func _policy_of(op: Dictionary, i: int) -> LazilyMergePolicy:
+	var name: String = op.get("policy", "Sum")
+	if name == "Sum":
+		return LazilyMergePolicy.sum()
+	if name == "KeepLatest":
+		return LazilyMergePolicy.keep_latest()
+	_fail(i, "unsupported merge policy '%s' — this runner folds under Sum" % name)
+	return LazilyMergePolicy.sum()
+
+
 func _make_effect(op: Dictionary, _i: int) -> void:
 	var id: String = op["id"]
 	var reads: Array = op.get("reads", [])
 	var writes_own_cone: String = op.get("writes_own_cone", "")
+	var merges_into: String = op.get("merges_into", "")
 	var sc: String = op.get("scope", "")
 	var owner: LazilyScope = scopes[sc] if sc != "" and scopes.has(sc) else _root_scope
 
@@ -245,9 +305,20 @@ func _make_effect(op: Dictionary, _i: int) -> void:
 	var established := [false]
 	var e := owner.effect(func(k: LazilyCompute) -> void:
 		observed.append(id)
+		effect_runs[id] = int(effect_runs.get(id, 0)) + 1
 		var total := 0
 		for r: String in reads:
 			total += _as_int(k.read(cells[r]))
+		if merges_into != "":
+			# The FEED: read the upstream (the edge belongs to this effect), then
+			# fold the sum into the accumulator. The counter ticks inside the
+			# body, so it moves only when the runtime actually folds — ticking at
+			# the call site would report this runner's intent rather than the
+			# kernel's behaviour, and that is the single thing these fixtures
+			# discriminate on.
+			var acc := cells[merges_into] as LazilySource
+			merges[merges_into] = int(merges.get(merges_into, 0)) + 1
+			acc.merge(total)
 		if writes_own_cone != "" and established[0]:
 			# Deliberate feedback: writing a cell this body reads. The contract
 			# is that the drain reports exhaustion, not that it settles.
@@ -268,13 +339,25 @@ func _record_teardown_of(owner: LazilyScope, id: String, inner: LazilyCell) -> v
 	members[members.size() - 1] = _CleanupRecorder.new(cleanup_order, id, inner)
 
 
+## How many times the named effect has run, across the whole scenario.
+##
+## `observed` is per-step by design (it answers "ran because of THIS step"), so
+## the cumulative count needs its own ledger.
+func _effect_runs(id: String) -> int:
+	return int(effect_runs.get(id, 0))
+
+
 func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 	for key: String in expect:
 		match key:
 			"note":
 				continue
 			"value":
-				var cell: Variant = cells.get(op.get("id", ""))
+				# A feed effect's step asserts `value` on the cell it FEEDS, not
+				# on the effect — an effect has no value. The corpus names the
+				# target in `merges_into`, so that is what the read resolves to.
+				var value_id: String = op.get("merges_into", op.get("id", ""))
+				var cell: Variant = cells.get(value_id)
 				if cell == null:
 					_fail(i, "expect.value but op names no known cell")
 					continue
@@ -360,16 +443,33 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 				if got_obs != want_sorted:
 					_fail(i, "expect.observed_by %s, got %s" % [want_sorted, got_obs])
 				observed = []
+			"merges_of":
+				var want_m: Dictionary = expect["merges_of"]
+				for mcid: String in want_m.keys():
+					if not merges.has(mcid):
+						_fail(i, "expect.merges_of names '%s', which is not a merge cell" % mcid)
+						continue
+					var got_m: int = merges[mcid]
+					if got_m != int(want_m[mcid]):
+						_fail(i, "expect.merges_of['%s'] %s, got %d"
+							% [mcid, str(want_m[mcid]), got_m])
 			"computes_of":
 				# Cumulative, never reset between steps: the fixtures assert a running
 				# total, and resetting would turn "recomputed twice" into "recomputed
 				# once" at every checkpoint.
 				var want_c: Dictionary = expect["computes_of"]
 				for ccid: String in want_c:
-					if not cells.has(ccid):
-						_fail(i, "expect.computes_of names unknown cell '%s'" % ccid)
+					if not cells.has(ccid) and not effects.has(ccid):
+						_fail(i, "expect.computes_of names unknown node '%s'" % ccid)
 						continue
-					var got_c: int = computes.get(ccid, 0)
+					# On a derived cell this is the compute counter; on an EFFECT
+					# — `merge_folds_synchronously_in_batch`'s `watch` is an
+					# observer of the accumulator — the "computes" are its runs,
+					# already recorded by name in the run ledger. Counting there
+					# needs no second counter and no change to how effects build.
+					var got_c: int = (
+						_effect_runs(ccid) if effects.has(ccid) else int(computes.get(ccid, 0))
+					)
 					if got_c != int(want_c[ccid]):
 						_fail(i, "expect.computes_of['%s'] %s, got %d"
 							% [ccid, want_c[ccid], got_c])
