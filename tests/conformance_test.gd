@@ -17,6 +17,10 @@ const REPLAYED := [
 	"reactive-graph/scoping_bounds_teardown_not_visibility.json",
 	"reactive-graph/read_after_dispose_is_an_error.json",
 	"reactive-graph/feedback_drain_bound_reports_exhaustion.json",
+	# `signal` / `dispose_signal`: an eager `Computed` plus its puller.
+	"reactive-graph/signal_materializes_without_a_read.json",
+	"reactive-graph/signal_materializes_once_per_batch.json",
+	"reactive-graph/dispose_signal_reverts_to_lazy.json",
 ]
 
 

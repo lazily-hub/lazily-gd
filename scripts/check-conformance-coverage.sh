@@ -64,11 +64,6 @@ KNOWN_UNCOVERED=(
   "reactive-graph/merge_feed_through_a_formula_coalesces.json"
   "reactive-graph/merge_folds_synchronously_in_batch.json"
   "reactive-graph/merge_per_settled_cone_not_per_write.json"
-  # `signal` / `dispose_signal` ops: materialization is not in the Phase 1
-  # vocabulary.
-  "reactive-graph/dispose_signal_reverts_to_lazy.json"
-  "reactive-graph/signal_materializes_once_per_batch.json"
-  "reactive-graph/signal_materializes_without_a_read.json"
   # `fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle` bulk ops are
   # not implemented; id recycling needs explicit work beyond instance ids.
   "reactive-graph/churn_returns_to_baseline.json"

@@ -21,6 +21,13 @@ var cleanup_order: Array[String] = []
 ## Effects the fixture declared as writing into their own dependency cone.
 var _root_scope: LazilyScope
 
+## Cumulative compute-function runs per cell id. The runner builds every compute
+## body here, so it counts them at the only place that cannot disagree with what
+## actually ran — a kernel-side counter would be a second source of truth, and an
+## inferred count would be the hand-transcribed expectation this runner exists to
+## avoid.
+var computes: Dictionary[String, int] = {}
+
 var failures: Array[String] = []
 
 
@@ -56,17 +63,41 @@ func _apply(op: Dictionary, i: int) -> void:
 		"cell":
 			cells[op["id"]] = ctx.source(op.get("value"))
 		"computed":
-			var reads: Array = op.get("reads", [])
-			var offset: int = int(op.get("offset", 0))
-			var c := ctx.computed(func(k: LazilyCompute) -> Variant:
-				var total: int = offset
-				for r: String in reads:
-					total += _as_int(k.read(cells[r]))
-				return total)
+			var c := ctx.computed(_derivation(op))
 			cells[op["id"]] = c
 			var sc: String = op.get("scope", "")
 			if sc != "":
 				scopes[sc].own(c)
+		"signal":
+			# A signal IS an eager `Computed`, not a distinct kind. Welding
+			# eagerness into invalidation instead recomputes once per WRITE rather
+			# than once per batch — the `#lzsignaleager` defect that every
+			# values-only fixture passes.
+			var sig := ctx.computed(_derivation(op)).eager()
+			cells[op["id"]] = sig
+			var ssc: String = op.get("scope", "")
+			if ssc != "":
+				scopes[ssc].own(sig)
+		"dispose_signal":
+			var sg: Variant = cells.get(op["id"])
+			if sg is LazilyComputed:
+				(sg as LazilyComputed).lazy()
+			else:
+				_fail(i, "dispose_signal names unknown signal '%s'" % op["id"])
+		"batch":
+			# The writes land inside ONE batch so the flush happens once at exit.
+			# Applying them individually would coalesce nothing and make
+			# `signal_materializes_once_per_batch` indistinguishable from the
+			# per-write defect it exists to catch.
+			var writes: Array = op.get("writes", [])
+			ctx.batch(func() -> Variant:
+				for w: Dictionary in writes:
+					var wt: Variant = cells.get(w["id"])
+					if wt == null:
+						_fail(i, "batch write names unknown cell '%s'" % w["id"])
+						continue
+					(wt as LazilySource).set_value(w.get("value"))
+				return null)
 		"effect":
 			_make_effect(op, i)
 		"set_cell":
@@ -107,6 +138,21 @@ func _apply(op: Dictionary, i: int) -> void:
 				_fail(i, "dispose names unknown id '%s'" % op["id"])
 		_:
 			_fail(i, "unsupported op '%s' — this runner replays only the Phase 1 vocabulary" % t)
+
+
+## The compute body shared by the `computed` and `signal` ops, wrapped in the
+## `computes` counter. Both derive identically — the ONLY difference is
+## eagerness, which is exactly what `computes_of` discriminates.
+func _derivation(op: Dictionary) -> Callable:
+	var id: String = op["id"]
+	var reads: Array = op.get("reads", [])
+	var offset: int = int(op.get("offset", 0))
+	return func(k: LazilyCompute) -> Variant:
+		computes[id] = computes.get(id, 0) + 1
+		var total: int = offset
+		for r: String in reads:
+			total += _as_int(k.read(cells[r]))
+		return total
 
 
 func _make_effect(op: Dictionary, _i: int) -> void:
@@ -232,6 +278,19 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 				if got_obs != want_sorted:
 					_fail(i, "expect.observed_by %s, got %s" % [want_sorted, got_obs])
 				observed = []
+			"computes_of":
+				# Cumulative, never reset between steps: the fixtures assert a running
+				# total, and resetting would turn "recomputed twice" into "recomputed
+				# once" at every checkpoint.
+				var want_c: Dictionary = expect["computes_of"]
+				for ccid: String in want_c:
+					if not cells.has(ccid):
+						_fail(i, "expect.computes_of names unknown cell '%s'" % ccid)
+						continue
+					var got_c: int = computes.get(ccid, 0)
+					if got_c != int(want_c[ccid]):
+						_fail(i, "expect.computes_of['%s'] %s, got %d"
+							% [ccid, want_c[ccid], got_c])
 			"drain_exhausted":
 				var want_drain: bool = expect["drain_exhausted"]
 				if ctx.drain_exhausted() != want_drain:

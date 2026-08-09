@@ -32,6 +32,23 @@ func eager() -> LazilyComputed:
 	return self
 
 
+## Drop the eager puller and revert to recompute-on-read. The backing value and
+## its edges survive: this de-eagers the cell, it does not tear it down.
+##
+## Every binding spells the operation `dispose_signal`, which is a naming
+## inaccuracy rather than a description — a caller who trusts the name expects
+## teardown and gets a still-live lazy cell. Routing it to `dispose()` would make
+## the value unreadable, which is failure (a) in
+## `dispose_signal_reverts_to_lazy.json`. Freezing the value at its last eager
+## materialization is failure (b), and it looks correct if you only check that
+## the read succeeds — so `_stale` is deliberately left alone here. The cell
+## keeps its cached value until an ordinary invalidation marks it, and the next
+## read recomputes exactly as a lazy `Computed` always would.
+func lazy() -> LazilyComputed:
+	_eager = false
+	return self
+
+
 func is_eager() -> bool:
 	return _eager
 
@@ -94,8 +111,8 @@ func _detach() -> void:
 func dispose() -> void:
 	if _disposed:
 		return
-	# Reverts to lazy: a disposed computed holds no cached value and no edges.
-	# (`dispose_signal_reverts_to_lazy.json`)
+	# A disposed computed holds no cached value and no edges. This is teardown,
+	# NOT the de-eagering that `dispose_signal` performs — see `lazy()`.
 	_stale = true
 	_value = null
 	super()
