@@ -21,6 +21,10 @@ const REPLAYED := [
 	"reactive-graph/signal_materializes_without_a_read.json",
 	"reactive-graph/signal_materializes_once_per_batch.json",
 	"reactive-graph/dispose_signal_reverts_to_lazy.json",
+	# `fail_next`: an injected compute failure, to pin that it is never cached.
+	"reactive-graph/failed_compute_is_never_cached.json",
+	# shape=scenarios: several independent runs in one fixture.
+	"reactive-graph/scope_teardown_equals_fold_of_disposals.json",
 ]
 
 
@@ -32,6 +36,38 @@ func test_canonical_corpus_is_present() -> void:
 		"canonical corpus not found at %s — clone the lazily-spec sibling"
 		% LazilyFixtureLoader.spec_dir()
 	).is_true()
+
+
+## Scenario isolation, asserted directly.
+##
+## `scope_teardown_equals_fold_of_disposals.json` does NOT discriminate this:
+## both of its scenarios define the same ids, so a runner that leaked state
+## between them overwrites the stale entries and still passes. That was measured,
+## not assumed — deleting the per-scenario reset leaves the canonical fixture
+## green. So the isolation gets its own assertion, on a synthetic input, rather
+## than an unverified belief that the corpus covers it.
+##
+## Synthetic input is appropriate HERE and nowhere else in this file: it tests
+## the runner's own bookkeeping, not a normative expectation. Restating a
+## canonical expectation in GDScript is the drift this suite exists to avoid.
+func test_scenarios_do_not_share_state() -> void:
+	var fixture := {
+		"kind": "ReactiveGraph",
+		"shape": "scenarios",
+		"scenarios": [
+			{"id": "defines", "steps": [{"op": {"type": "cell", "id": "x", "value": 1}}]},
+			{"id": "must_not_see_it", "steps": [{"op": {"type": "read", "id": "x"}}]},
+		],
+	}
+	var runner := LazilyReactiveGraphRunner.new()
+	var fails := runner.run(fixture)
+	assert_array(runner.scenarios_replayed).is_equal(["defines", "must_not_see_it"])
+	# The second scenario must not see the first scenario's cell.
+	assert_int(fails.size()).override_failure_message(
+		"a scenario saw a cell defined by an earlier scenario: %s" % [fails]
+	).is_equal(1)
+	assert_str(fails[0]).contains("must_not_see_it")
+	assert_str(fails[0]).contains("unknown cell 'x'")
 
 
 func test_replays_every_claimed_fixture() -> void:
@@ -47,6 +83,18 @@ func test_replays_every_claimed_fixture() -> void:
 
 		var runner := LazilyReactiveGraphRunner.new()
 		var fails := runner.run(fixture)
+
+		# Declared-vs-replayed, for the fixtures that carry several independent
+		# runs. A skipped scenario raises no failure of its own, so without this
+		# a runner that replayed one of two would report the fixture conformant.
+		if fixture.get("shape", "steps") == "scenarios":
+			var declared: Array[String] = []
+			for sc: Dictionary in fixture.get("scenarios", []):
+				declared.append(str(sc.get("id", sc.get("name", ""))))
+			assert_array(runner.scenarios_replayed).override_failure_message(
+				"%s declares scenarios %s but replayed %s"
+				% [fixture_id, declared, runner.scenarios_replayed]
+			).is_equal(declared)
 		assert_array(fails).override_failure_message(
 			"%s did not conform:\n  %s" % [fixture_id, "\n  ".join(fails)]
 		).is_empty()

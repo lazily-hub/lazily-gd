@@ -27,17 +27,72 @@ var _root_scope: LazilyScope
 ## inferred count would be the hand-transcribed expectation this runner exists to
 ## avoid.
 var computes: Dictionary[String, int] = {}
+## Compute failures still armed per cell id, decremented as each one fires.
+## Injected in the runner rather than the kernel: the contract under test is
+## that a FAILED compute is not cached, and that holds however the body failed.
+## A kernel-side failure switch would test the switch.
+var fail_next: Dictionary[String, int] = {}
+
+## Names the scenario a failure came from; empty for a shape=steps fixture.
+var _scenario := ""
+
+## Scenario ids this run actually replayed, in order.
+##
+## The declared-vs-replayed rung. A scenario the runner skips contributes no
+## failures, so replaying 1 of 2 scenarios reports conformance over half the
+## fixture — indistinguishable from replaying both. The suite asserts this
+## against the ids the fixture declares.
+var scenarios_replayed: Array[String] = []
 
 var failures: Array[String] = []
 
 
+## Replays a fixture of either shape.
+##
+## `shape: "scenarios"` is a fixture carrying several INDEPENDENT runs, not a
+## longer one. Each scenario gets a fresh context and fresh runner state, and
+## carrying state across them would let an earlier scenario's graph satisfy a
+## later scenario's assertion — which is how a multi-scenario fixture reports
+## conformance it never demonstrated.
 func run(fixture: Dictionary) -> Array[String]:
+	var shape: String = fixture.get("shape", "steps")
+	if shape == "scenarios":
+		var scenarios: Array = fixture.get("scenarios", [])
+		if scenarios.is_empty():
+			failures.append("shape=scenarios but the fixture carries none — "
+				+ "replaying nothing must not report conformance")
+			return failures
+		for sc: Dictionary in scenarios:
+			# The id is required rather than defaulted to a position: a scenario
+			# booked by index cannot be named in an excuse and silently renumbers
+			# when the corpus grows.
+			var sid: String = str(sc.get("id", sc.get("name", "")))
+			if sid == "":
+				failures.append("a scenario carries neither `id` nor `name`")
+				continue
+			scenarios_replayed.append(sid)
+			_replay(sc.get("steps", []), sid)
+		return failures
+	_replay(fixture.get("steps", []), "")
+	return failures
+
+
+## One independent run: fresh context, fresh state.
+func _replay(steps: Array, scenario: String) -> void:
+	_scenario = scenario
 	ctx = LazilyContext.new()
+	cells = {}
+	scopes = {}
+	effects = {}
+	effect_scope_of = {}
+	observed = []
+	cleanup_order = []
+	computes = {}
+	fail_next = {}
 	# Unscoped effects in a fixture still need an owner, because a scope is the
 	# sole strong owner in this binding. The runner is that owner; the fixture's
 	# semantics are unchanged, since it never tears this scope down.
 	_root_scope = ctx.scope()
-	var steps: Array = fixture.get("steps", [])
 	for i in steps.size():
 		var step: Dictionary = steps[i]
 		var op: Dictionary = step.get("op", {})
@@ -45,11 +100,13 @@ func run(fixture: Dictionary) -> Array[String]:
 		var expect: Variant = step.get("expect")
 		if expect != null:
 			_check(expect as Dictionary, op, i)
-	return failures
 
 
 func _fail(i: int, msg: String) -> void:
-	failures.append("step %d: %s" % [i, msg])
+	if _scenario == "":
+		failures.append("step %d: %s" % [i, msg])
+	else:
+		failures.append("scenario %s, step %d: %s" % [_scenario, i, msg])
 
 
 func _apply(op: Dictionary, i: int) -> void:
@@ -68,6 +125,7 @@ func _apply(op: Dictionary, i: int) -> void:
 			var sc: String = op.get("scope", "")
 			if sc != "":
 				scopes[sc].own(c)
+				_record_teardown_of(scopes[sc], op["id"], c)
 		"signal":
 			# A signal IS an eager `Computed`, not a distinct kind. Welding
 			# eagerness into invalidation instead recomputes once per WRITE rather
@@ -78,6 +136,11 @@ func _apply(op: Dictionary, i: int) -> void:
 			var ssc: String = op.get("scope", "")
 			if ssc != "":
 				scopes[ssc].own(sig)
+		"fail_next":
+			# Arming must not itself compute — the fixture asserts the count is
+			# unchanged at this step, which catches a binding that re-runs the body
+			# in order to arm it.
+			fail_next[op["id"]] = int(op.get("count", 1))
 		"dispose_signal":
 			var sg: Variant = cells.get(op["id"])
 			if sg is LazilyComputed:
@@ -129,10 +192,16 @@ func _apply(op: Dictionary, i: int) -> void:
 				return
 			(d as LazilyScope).disarm()
 		"dispose":
+			# An explicit disposal joins the same cleanup ledger as a scope
+			# teardown. `scope_teardown_equals_fold_of_disposals.json` asserts the
+			# two routes produce the SAME order, which it cannot do if only one of
+			# them is observed.
 			var victim: Variant = cells.get(op["id"])
 			if victim != null:
+				cleanup_order.append(op["id"])
 				(victim as LazilyCell).dispose()
 			elif effects.has(op["id"]):
+				cleanup_order.append(op["id"])
 				effects[op["id"]].dispose()
 			else:
 				_fail(i, "dispose names unknown id '%s'" % op["id"])
@@ -149,6 +218,13 @@ func _derivation(op: Dictionary) -> Callable:
 	var offset: int = int(op.get("offset", 0))
 	return func(k: LazilyCompute) -> Variant:
 		computes[id] = computes.get(id, 0) + 1
+		# The count increments BEFORE the failure check: the body ran, and the
+		# fixture asserts exactly that — a failed compute is still a compute.
+		var armed: int = fail_next.get(id, 0)
+		if armed > 0:
+			fail_next[id] = armed - 1
+			ctx._record_read_error("compute_failed")
+			return null
 		var total: int = offset
 		for r: String in reads:
 			total += _as_int(k.read(cells[r]))
@@ -180,10 +256,16 @@ func _make_effect(op: Dictionary, _i: int) -> void:
 		established[0] = true)
 	effects[id] = e
 	effect_scope_of[id] = sc
-	# Teardown order is observed through the scope's member list, so wrap the
-	# member slot with a recorder rather than trusting a separate list.
+	_record_teardown_of(owner, id, e)
+
+
+## Teardown order is observed through the scope's member list, so the member
+## slot is wrapped with a recorder rather than trusting a separate list — a
+## parallel list records the order the runner INTENDED, not the one the scope
+## actually ran.
+func _record_teardown_of(owner: LazilyScope, id: String, inner: LazilyCell) -> void:
 	var members := owner._members
-	members[members.size() - 1] = _CleanupRecorder.new(cleanup_order, id, e)
+	members[members.size() - 1] = _CleanupRecorder.new(cleanup_order, id, inner)
 
 
 func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
@@ -332,6 +414,12 @@ class _CleanupRecorder extends LazilyCell:
 
 	func dispose() -> void:
 		if _disposed:
+			return
+		# A member disposed explicitly already booked itself at the `dispose` op.
+		# Booking it again at scope teardown would report a disposal that did not
+		# happen here and corrupt the order the fixture compares.
+		if _inner.is_disposed():
+			super()
 			return
 		_order.append(_id)
 		_inner.dispose()

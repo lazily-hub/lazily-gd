@@ -68,10 +68,6 @@ KNOWN_UNCOVERED=(
   # not implemented; id recycling needs explicit work beyond instance ids.
   "reactive-graph/churn_returns_to_baseline.json"
   "reactive-graph/recycled_id_inherits_nothing.json"
-  # `fail_next` needs an injectable compute failure the runner cannot express yet.
-  "reactive-graph/failed_compute_is_never_cached.json"
-  # shape=scenarios, not shape=steps; the runner replays steps fixtures only.
-  "reactive-graph/scope_teardown_equals_fold_of_disposals.json"
 )
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
