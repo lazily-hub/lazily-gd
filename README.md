@@ -16,7 +16,7 @@ reactive-signals family, shipped as a Godot addon.
 | Family | Rust | Python | Kotlin | JS | Dart | Zig | Go | C++ | C# | GDScript |
 | --------- | :----: | :------: | :------: | :--: | :----: | :---: | :--: | :---: | :--: | :--------: |
 | Reactive graph | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ~ | ✅ | ✅ | ~ |
-| Materialization | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ~ | ✅ | — |
+| Materialization | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Family sync | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Statecharts | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Keyed collections | ✅ | ✅ | ✅ | ✅ | ✅ | ~ | ✅ | ✅ | ✅ | — |
