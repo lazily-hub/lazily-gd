@@ -63,7 +63,22 @@ var failures: Array[String] = []
 ## later scenario's assertion — which is how a multi-scenario fixture reports
 ## conformance it never demonstrated.
 func run(fixture: Dictionary) -> Array[String]:
-	var shape: String = fixture.get("shape", "steps")
+	# Fail CLOSED on a shape this runner does not model (#lzledgeragreementaudit).
+	# `fixture.get("shape", "steps")` used to fall through to the `steps` arm for
+	# ANY other value, and a fixture whose steps moved under a different key then
+	# read as an empty step list: zero steps replayed, zero failures, green. Both
+	# ledgers would still agree — the fixture is named in REPLAYED and absent from
+	# KNOWN_UNCOVERED — while the run proved nothing. Every canonical
+	# reactive-graph fixture carries an explicit `shape`, so a missing one is drift
+	# too, not a default worth honouring.
+	var shape: String = str(fixture.get("shape", ""))
+	if shape != "steps" and shape != "scenarios":
+		failures.append(
+			("unsupported fixture shape '%s' — this runner replays only `steps` " % shape)
+			+ "and `scenarios`. Teach it the shape, or name the fixture in "
+			+ "KNOWN_UNCOVERED in scripts/check-conformance-coverage.sh with a reason"
+		)
+		return failures
 	if shape == "scenarios":
 		var scenarios: Array = fixture.get("scenarios", [])
 		if scenarios.is_empty():
@@ -81,7 +96,14 @@ func run(fixture: Dictionary) -> Array[String]:
 			scenarios_replayed.append(sid)
 			_replay(sc.get("steps", []), sid)
 		return failures
-	_replay(fixture.get("steps", []), "")
+	var steps: Array = fixture.get("steps", [])
+	if steps.is_empty():
+		# The `steps` twin of the scenarios rung above: replaying nothing must not
+		# report conformance.
+		failures.append("shape=steps but the fixture carries none — "
+			+ "replaying nothing must not report conformance")
+		return failures
+	_replay(steps, "")
 	return failures
 
 

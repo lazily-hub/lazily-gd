@@ -77,6 +77,38 @@ func test_scenarios_do_not_share_state() -> void:
 	assert_str(fails[0]).contains("unknown cell 'x'")
 
 
+## The runner must refuse a shape it does not model (#lzledgeragreementaudit).
+##
+## Runner bookkeeping again, so synthetic input is right here for the same reason
+## as above. The dispatch used to read `shape` with a `"steps"` default and fall
+## through for every other value, so a fixture whose steps moved under a new key
+## replayed an empty list: no ops, no failures, green — while both ledgers still
+## agreed, because the fixture is named in REPLAYED and absent from
+## KNOWN_UNCOVERED. Two ledgers agreeing about a run that proved nothing is the
+## same vacuous green the manifest guard exists to prevent, one rung up.
+func test_unknown_shape_fails_closed() -> void:
+	var runner := LazilyReactiveGraphRunner.new()
+	var fails := runner.run({"kind": "ReactiveGraph", "shape": "table", "rows": []})
+	assert_int(fails.size()).override_failure_message(
+		"an unmodelled shape replayed as `steps` instead of failing: %s" % [fails]
+	).is_equal(1)
+	assert_str(fails[0]).contains("unsupported fixture shape 'table'")
+
+	# A missing `shape` is drift, not a default: every canonical reactive-graph
+	# fixture declares one.
+	var absent := LazilyReactiveGraphRunner.new()
+	assert_str(absent.run({"kind": "ReactiveGraph", "steps": []})[0]).contains(
+		"unsupported fixture shape ''"
+	)
+
+	# And the declared-but-empty twin of the `scenarios` rung: a fixture that
+	# replays nothing must not report conformance.
+	var empty := LazilyReactiveGraphRunner.new()
+	assert_str(empty.run({"kind": "ReactiveGraph", "shape": "steps", "steps": []})[0]).contains(
+		"replaying nothing must not report conformance"
+	)
+
+
 func test_replays_every_claimed_fixture() -> void:
 	assert_int(REPLAYED.size()).is_greater(0)
 	for fixture_id: String in REPLAYED:
