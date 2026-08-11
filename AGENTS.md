@@ -91,6 +91,18 @@ perturb the kernel — making invalidation one-level-only must redden
 `transitive_invalidation_reaches_depth` at depth 2 and beyond. A replay that
 survives that perturbation is not replaying anything.
 
+**Resolve the corpus root through `LazilyFixtureLoader.spec_dir()`, never by
+spelling `../lazily-spec/conformance` in a runner.** A hardcoded root ignores
+`LAZILY_SPEC_CONFORMANCE_DIR`, so the replay reads the REAL corpus while a
+perturbation probe believes it redirected it — and is green either way, which is
+why nothing reports it. lazily-zig carried fourteen such sites: truncating
+fourteen fixtures reddened zero tests before the fix and 26 after. lazily-gd
+measured clean, and the first rung of `check-conformance-coverage.sh` keeps it
+that way. It folds `path_join`/`+` concatenations before looking, because
+lazily-go's and lazily-js's grep-shaped versions were both proven evadable by
+splitting the root across two literals. Comments are skipped by design;
+`fixture_loader.gd` is the one allowlisted file, since it defines the default.
+
 ## The load-graph check
 
 `make load-graph` runs `scripts/load_graph_check.gd` as **its own headless Godot
