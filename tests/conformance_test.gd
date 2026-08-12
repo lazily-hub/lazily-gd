@@ -32,6 +32,11 @@ const REPLAYED := [
 	"reactive-graph/merge_per_settled_cone_not_per_write.json",
 	"reactive-graph/merge_feed_through_a_formula_coalesces.json",
 	"reactive-graph/exact_fold_paths_stay_exact.json",
+	# `fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle`: bulk
+	# subscribe-unsubscribe vocabulary, plus disposal through a handle whose node
+	# is already gone.
+	"reactive-graph/churn_returns_to_baseline.json",
+	"reactive-graph/recycled_id_inherits_nothing.json",
 ]
 
 

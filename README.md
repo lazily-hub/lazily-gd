@@ -4,9 +4,12 @@ Pure-GDScript binding of the [lazily](https://github.com/lazily-hub/lazily-spec)
 reactive-signals family, shipped as a Godot addon.
 
 > **Status: Phase 2 — conformance runner.** The cell kernel is implemented, and
-> 9 of the 21 canonical `reactive-graph` fixtures replay against it. The
-> `GDScript` column exists in the cross-language matrix and reads `~` on Reactive
-> graph, `—` everywhere else. That is the whole claim: partial, and visibly so.
+> **all 21 canonical `reactive-graph` fixtures** replay against it with no named
+> excuses. The detail row `Reactive graph` is `✅` for `GDScript`; the FAMILY
+> roll-up below is still `~`, because the family also holds the thread-safe and
+> async contexts (`—`) and merge algebra (`~`, pending a `collections/` fixture).
+> Everything outside the reactive graph is `—`. That is the whole claim: partial,
+> and visibly so.
 
 ## Coverage
 

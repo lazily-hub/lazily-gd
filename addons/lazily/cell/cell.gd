@@ -12,8 +12,21 @@ extends RefCounted
 ## WEAK, and that is the whole design. `RefCounted` has no cycle collector, so a
 ## forward `Computed -> deps` strong edge plus a strong `dep -> dependents` edge
 ## would leak every graph that was ever built. Keying on `get_instance_id()`
-## gives O(1) dedup and is safe because Godot instance ids are monotonic — an id
-## is never reused, so a dead entry can never be mistaken for a live successor.
+## gives O(1) dedup and is safe because an instance id is never reused, so a dead
+## entry can never be mistaken for a live successor.
+##
+## Ids are GENERATIONAL, not monotonic. ObjectDB recycles the slot in the low
+## bits on almost every allocation and increments a validator in the high bits
+## each time; it is the validator, not an ever-rising counter, that makes the
+## composed id unique. `test_instance_ids_are_generational_not_monotonic`
+## measures both halves, so the property this index rests on is asserted rather
+## than inherited from a docs paraphrase.
+##
+## The aliasing hazard `recycled_id_inherits_nothing.json` is about — a disposed
+## node's edges reappearing under whatever inherits its id — cannot arise here
+## for a structural reason that outranks the id scheme: this dictionary lives
+## INSIDE the node, so a fresh node has a fresh index. There is no owner-keyed
+## side table to alias.
 var _dependents: Dictionary[int, WeakRef] = {}
 
 var _disposed := false

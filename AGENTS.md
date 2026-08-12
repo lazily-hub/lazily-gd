@@ -7,13 +7,23 @@ independent design: when this repo and
 and this repo is the finding.
 
 **Status: Phase 2 (conformance runner).** The cell kernel is implemented under
-`addons/lazily/cell/`, and the conformance runner replays **9 of the 21 canonical
-`reactive-graph` fixtures** — every one whose ops the Phase 1 vocabulary covers.
+`addons/lazily/cell/`, and the conformance runner replays **all 21 canonical
+`reactive-graph` fixtures**. `KNOWN_UNCOVERED` is empty — every fixture in the
+one family this binding claims is replayed, not excused.
 
-`GDScript` is now the 10th column in `lazily-spec/coverage.json`: `~` on Reactive
-graph, `—` on all 28 other families. Partial, and visibly so — `~` is the mark
-the claim guard leaves unverified by design, which is the honest place for
-"implemented, but not this whole row."
+`GDScript` is the 10th column in `lazily-spec/coverage.json`. The detail row
+`reactive-graph` is `✅`; the Reactive-graph FAMILY roll-up stays `~`, because
+that family also holds `thread-safe-context` and `async-reactive-context` (`—`,
+no threads or async context here) and `merge-algebra` (`~`, whose sixth citation
+is `collections/mergecell_algebra.json` — outside
+`IMPLEMENTED_FAMILY_PREFIXES`). All 28 other families are `—`. Partial, and
+visibly so.
+
+Promoting that mark was not optional bookkeeping. `check-coverage-claims.mjs`
+fails a `~` that its ledger cannot distinguish from `✅`, so emptying
+`KNOWN_UNCOVERED` and leaving the mark alone is a hard error
+(`#lzpartialmarkadjudicate`) — the ledger and the matrix move in the same change
+or not at all.
 
 **The ledger format had to be fixed before the column could exist**, and the
 reason is worth keeping. `check-coverage-claims.mjs` reads each binding's
@@ -90,6 +100,38 @@ evidence channel, and dropping a replayed fixture fails as unexcused. Also
 perturb the kernel — making invalidation one-level-only must redden
 `transitive_invalidation_reaches_depth` at depth 2 and beyond. A replay that
 survives that perturbation is not replaying anything.
+
+### The bulk vocabulary, and what it actually pins here
+
+`fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle` build subscribers
+as **Effects, not derived cells**. `churn_returns_to_baseline` asserts
+`observed_count` on a publish, and in a lazy binding only a sink observes a
+publish without being pulled — a `Computed` subscriber satisfies every degree
+assertion in both fixtures while the propagation assertion reads 0, which is the
+leak-as-work half going quietly missing.
+
+Both fixtures were measured against kernel mutations rather than assumed live:
+
+- `Effect._detach()` made a no-op → `churn_returns_to_baseline` reports 508 and
+  509 dependents against a baseline of 8 (the leak the fixture predicts, to the
+  count), and `recycled_id_inherits_nothing` reports 64 where it wants 0.
+- `Computed._detach()` made a no-op → `recycled_id_inherits_nothing` reddens
+  alongside four already-replayed fixtures.
+
+`dispose_stale_handle` is a different case and worth stating plainly: it is
+**structurally satisfied** here, not discriminating. Handles in this binding are
+`RefCounted` references, which is one of the two outs the fixture's own note
+names, so disposal through a stale one cannot reach an unrelated node. The
+runner still CHECKS the declared `handle_kind` against the handle it recorded, so
+a runner that quietly disposed something else is caught.
+
+The same goes for the "recycled id" half. Godot's ObjectDB is a free list over
+slots with a generation tag — measured in
+`test_instance_ids_are_generational_not_monotonic`, which also corrects the usual
+"ids are monotonic" phrasing — but the reason the fixture's aliasing hazard
+cannot arise is simpler and outranks it: the edge index lives INSIDE the node, so
+there is no owner-keyed side table to alias. Keying `_dependents` on the slot
+alone (`id & 0xFFFFFFFF`) was tried and leaves the suite green.
 
 **Resolve the corpus root through `LazilyFixtureLoader.spec_dir()`, never by
 spelling `../lazily-spec/conformance` in a runner.** A hardcoded root ignores

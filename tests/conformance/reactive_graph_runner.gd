@@ -15,6 +15,11 @@ var scopes: Dictionary[String, LazilyScope] = {}
 ## Effects, by fixture id, so `cleanup_order` and `observed_by` can name them.
 var effects: Dictionary[String, LazilyEffect] = {}
 var effect_scope_of: Dictionary[String, String] = {}
+## The handle first bound to each fixture id, kept forever so
+## `dispose_stale_handle` can dispose through a reference to a node that is
+## already gone. Separate from `cells`/`effects` on purpose: churn rebinds an id
+## to a replacement node, and the stale-handle op asks about the ORIGINAL.
+var stale_handles: Dictionary[String, LazilyCell] = {}
 ## Ordered record of which effect bodies ran since the last checkpoint.
 var observed: Array[String] = []
 
@@ -115,13 +120,14 @@ func _replay(steps: Array, scenario: String) -> void:
 	scopes = {}
 	effects = {}
 	effect_scope_of = {}
+	stale_handles = {}
 	observed = []
 	cleanup_order = []
 	computes = {}
 	fail_next = {}
 	# Unscoped effects in a fixture still need an owner, because a scope is the
 	# sole strong owner in this binding. The runner is that owner; the fixture's
-	# semantics are unchanged, since it never tears this scope down.
+	# semantics are unchanged, since it never tears this scope down MID-replay.
 	_root_scope = ctx.scope()
 	for i in steps.size():
 		var step: Dictionary = steps[i]
@@ -130,6 +136,14 @@ func _replay(steps: Array, scenario: String) -> void:
 		var expect: Variant = step.get("expect")
 		if expect != null:
 			_check(expect as Dictionary, op, i)
+	# Tear the owner down once every step and expectation is done. Nothing
+	# observable depends on it — but `churn_returns_to_baseline` builds a
+	# thousand subscribers, and each one's body captures this runner, so
+	# `runner -> _root_scope -> effect -> body -> runner` is a reference cycle
+	# and `RefCounted` has no collector to break it. Leaving it standing means
+	# the runner that just proved a graph does not leak leaks that graph on the
+	# way out. Clearing the member list is what breaks the ring.
+	_root_scope.dispose()
 
 
 func _fail(i: int, msg: String) -> void:
@@ -149,6 +163,7 @@ func _apply(op: Dictionary, i: int) -> void:
 	match t:
 		"cell":
 			cells[op["id"]] = ctx.source(op.get("value"))
+			_remember_handle(op["id"], cells[op["id"]])
 		"merge_cell":
 			# A merge cell is an ordinary source node whose writes fold under a
 			# policy — same class, so degree/read/dispose are unchanged. The
@@ -157,6 +172,7 @@ func _apply(op: Dictionary, i: int) -> void:
 			# `merge_per_settled_cone_not_per_write.json` asserts on its first
 			# step ("construction alone folds nothing").
 			cells[op["id"]] = ctx.source_with(op.get("value"), _policy_of(op, i))
+			_remember_handle(op["id"], cells[op["id"]])
 			if not merges.has(op["id"]):
 				merges[op["id"]] = 0
 		"merge":
@@ -173,6 +189,7 @@ func _apply(op: Dictionary, i: int) -> void:
 		"computed":
 			var c := ctx.computed(_derivation(op))
 			cells[op["id"]] = c
+			_remember_handle(op["id"], c)
 			var sc: String = op.get("scope", "")
 			if sc != "":
 				scopes[sc].own(c)
@@ -184,6 +201,7 @@ func _apply(op: Dictionary, i: int) -> void:
 			# values-only fixture passes.
 			var sig := ctx.computed(_derivation(op)).eager()
 			cells[op["id"]] = sig
+			_remember_handle(op["id"], sig)
 			var ssc: String = op.get("scope", "")
 			if ssc != "":
 				scopes[ssc].own(sig)
@@ -270,8 +288,164 @@ func _apply(op: Dictionary, i: int) -> void:
 				effects[op["id"]].dispose()
 			else:
 				_fail(i, "dispose names unknown id '%s'" % op["id"])
+		"fanout":
+			_fanout(op, i)
+		"dispose_fanout":
+			_dispose_fanout(op, i)
+		"churn":
+			_churn(op, i)
+		"dispose_stale_handle":
+			_dispose_stale_handle(op, i)
 		_:
 			_fail(i, "unsupported op '%s' — this runner replays only the Phase 1 vocabulary" % t)
+
+
+## Bind `id` to the handle it is FIRST created with, and never rebind it.
+##
+## `cells`/`effects` follow the fixture's current meaning of an id; churn
+## deliberately rebinds one. `dispose_stale_handle` asks the other question —
+## what the id used to name — so it needs the binding that is no longer current.
+func _remember_handle(id: String, node: LazilyCell) -> void:
+	if not stale_handles.has(id):
+		stale_handles[id] = node
+
+
+## A fanout/churn subscriber, created as an EFFECT rather than a derived cell.
+##
+## `churn_returns_to_baseline` asserts `observed_count` on a publish, and in a
+## lazy binding only a sink observes a publish without being pulled. A `Computed`
+## subscriber would register the edge and then observe nothing: every degree
+## assertion in both fixtures would still pass while the propagation assertion —
+## the one that makes the leak visible as WORK and not only as memory — read 0.
+##
+## The scope is passed in because it is the sole strong owner here. A subscriber
+## owned by `_root_scope` lives until the runner drops it; one owned by a
+## per-cycle scope is gone when that scope ends, which is what the
+## `scope_per_cycle` churn mode means.
+func _subscriber(id: String, reads: Array, owner: LazilyScope) -> LazilyEffect:
+	var e := owner.effect(func(k: LazilyCompute) -> void:
+		observed.append(id)
+		effect_runs[id] = int(effect_runs.get(id, 0)) + 1
+		for r: String in reads:
+			_as_int(k.read(cells[r])))
+	effects[id] = e
+	return e
+
+
+## `read_each` is honoured by construction here, and saying so is not free.
+##
+## An Effect runs — and therefore reads — at creation, so every subscriber this
+## runner builds registers its edge immediately. That satisfies `read_each: true`
+## exactly; it CANNOT express `read_each: false`, which describes a subscriber
+## that is wired but never pulled. Doing the same thing for both values would
+## replay a fixture other than the one on disk, so the false case fails closed.
+func _requires_read_each(op: Dictionary, i: int, what: String) -> bool:
+	if bool(op.get("read_each", false)):
+		return true
+	_fail(i, ("%s with read_each=false is not modelled — a subscriber here is an " % what)
+		+ "Effect, which reads at creation; there is no wired-but-unpulled form")
+	return false
+
+
+func _fanout(op: Dictionary, i: int) -> void:
+	var prefix: String = op.get("id_prefix", "")
+	var reads: Array = op.get("reads", [])
+	for r: String in reads:
+		if not cells.has(r):
+			_fail(i, "fanout reads unknown cell '%s'" % r)
+			return
+	if not _requires_read_each(op, i, "fanout"):
+		return
+	for n in int(op.get("count", 0)):
+		_subscriber("%s_%d" % [prefix, n], reads, _root_scope)
+
+
+## Tear down the whole fanout. Disposing an absent index is not silently fine:
+## a count that outruns what was created means the fixture and the runner
+## disagree about how wide the fanout was, and the degree assertion that follows
+## would then be satisfied by a fanout that was never built.
+func _dispose_fanout(op: Dictionary, i: int) -> void:
+	var prefix: String = op.get("id_prefix", "")
+	for n in int(op.get("count", 0)):
+		var id := "%s_%d" % [prefix, n]
+		if not effects.has(id):
+			_fail(i, "dispose_fanout names '%s', which this run never created" % id)
+			return
+		effects[id].dispose()
+
+
+## Subscribe/unsubscribe churn, in the two modes the corpus declares.
+##
+## Both hold the LIVE subscriber count invariant across the cycles; they differ
+## only in who performs the teardown. That is the point of running both: scope
+## teardown is meant to be the fold of the individual disposals, so a binding
+## whose two routes disagree returns to different baselines.
+func _churn(op: Dictionary, i: int) -> void:
+	var src: String = op.get("source", "")
+	if not cells.has(src):
+		_fail(i, "churn names unknown source cell '%s'" % src)
+		return
+	if not _requires_read_each(op, i, "churn"):
+		return
+	var reads: Array = [src]
+	var prefix: String = op.get("id_prefix", "")
+	var cycles: int = int(op.get("cycles", 0))
+	var mode: String = op.get("mode", "")
+	match mode:
+		"dispose_then_create":
+			var width: int = int(op.get("live_width", 0))
+			if width <= 0:
+				_fail(i, "churn mode dispose_then_create needs a positive live_width")
+				return
+			for c in cycles:
+				# Dispose BEFORE creating the replacement. Creating first would
+				# hold width+1 subscribers for the length of a cycle, and the
+				# steady-state count a leaking binding is measured against would
+				# then depend on where the assertion happened to land.
+				var id := "%s_%d" % [prefix, c % width]
+				if effects.has(id):
+					effects[id].dispose()
+				_subscriber(id, reads, _root_scope)
+		"scope_per_cycle":
+			var id2 := "%s_scoped" % prefix
+			for c in cycles:
+				var s := ctx.scope()
+				_subscriber(id2, reads, s)
+				s.dispose()
+		_:
+			_fail(i, ("unsupported churn mode '%s' — this runner replays " % mode)
+				+ "`dispose_then_create` and `scope_per_cycle`")
+
+
+## Dispose through a handle whose node is already gone.
+##
+## The declared `handle_kind` is CHECKED, not trusted: it is the fixture's
+## statement about what the recycled id used to name, and a runner that recorded
+## something else would be disposing a different node than the contract
+## describes while still observing the survivor it expects.
+func _dispose_stale_handle(op: Dictionary, i: int) -> void:
+	var of: String = op.get("handle_of", "")
+	if not stale_handles.has(of):
+		_fail(i, "dispose_stale_handle names '%s', for which no handle was recorded" % of)
+		return
+	var handle: LazilyCell = stale_handles[of]
+	var want: String = op.get("handle_kind", "")
+	var got := _handle_kind(handle)
+	if got != want:
+		_fail(i, "dispose_stale_handle declares handle_kind '%s' for '%s', but the "
+			% [want, of] + "recorded handle is a '%s'" % got)
+		return
+	handle.dispose()
+
+
+## The corpus's three handle kinds, as this binding spells them: a source cell is
+## `cell`, a derived cell is `slot`, a sink is `effect`.
+static func _handle_kind(handle: LazilyCell) -> String:
+	if handle is LazilyEffect:
+		return "effect"
+	if handle is LazilySource:
+		return "cell"
+	return "slot"
 
 
 ## The compute body shared by the `computed` and `signal` ops, wrapped in the
@@ -348,6 +522,7 @@ func _make_effect(op: Dictionary, _i: int) -> void:
 			target.set_value(_as_int(target.peek()) + 1)
 		established[0] = true)
 	effects[id] = e
+	_remember_handle(id, e)
 	effect_scope_of[id] = sc
 	_record_teardown_of(owner, id, e)
 
@@ -464,6 +639,18 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 				want_sorted.sort()
 				if got_obs != want_sorted:
 					_fail(i, "expect.observed_by %s, got %s" % [want_sorted, got_obs])
+				observed = []
+			"observed_count":
+				# The bulk twin of `observed_by`: a fanout's members are named by
+				# position, so a fixture that publishes to hundreds of them
+				# asserts HOW MANY reacted rather than which. This is the
+				# assertion that makes a dependent-set leak visible as work —
+				# the degree assertions alone can be satisfied by a binding that
+				# counts edges correctly and still walks a stale list on publish.
+				var want_n := int(expect["observed_count"])
+				if observed.size() != want_n:
+					_fail(i, "expect.observed_count %d, got %d (%s)"
+						% [want_n, observed.size(), observed])
 				observed = []
 			"merges_of":
 				var want_m: Dictionary = expect["merges_of"]

@@ -227,11 +227,19 @@ IMPLEMENTED_FAMILY_PREFIXES=(
 # Fixtures in an IMPLEMENTED family that are still not replayed. These are the
 # entries that must carry a reason, because their family is one this binding
 # claims to support.
+#
+# EMPTY as of the bulk-op landing: every canonical `reactive-graph/` fixture is
+# replayed. An empty list is not a licence to stop naming gaps — the next
+# unreplayed fixture in an implemented family belongs here with a reason, and the
+# loop below still refuses one that is neither replayed nor named.
+#
+# Kept in the MULTI-LINE form even while empty. lazily-spec's
+# check-coverage-claims.mjs reads this array by scanning from `NAME=(` to the
+# next line beginning with `)`, so the one-line `KNOWN_UNCOVERED=()` spelling
+# has no terminator to find and the read runs on into whatever array closes
+# next — a silently wrong gap ledger, in the guard whose whole job is to make
+# gaps visible.
 KNOWN_UNCOVERED=(
-  # `fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle` bulk ops are
-  # not implemented; id recycling needs explicit work beyond instance ids.
-  "reactive-graph/churn_returns_to_baseline.json"
-  "reactive-graph/recycled_id_inherits_nothing.json"
 )
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
