@@ -1,15 +1,15 @@
 # lazily-gd
 
-Pure-GDScript binding of the [lazily](https://github.com/lazily-hub/lazily-spec)
-reactive-signals family, shipped as a Godot addon.
+Pure-GDScript binding of [lazily](https://github.com/lazily-hub/lazily-spec),
+shipped as a Godot addon.
 
-> **Status: Phase 2 — conformance runner.** The cell kernel is implemented, and
+> **Status: staged binding with canonical replay.** The cell kernel is implemented, and
 > **all 21 canonical `reactive-graph` fixtures** replay against it with no named
 > excuses. The detail row `Reactive graph` is `✅` for `GDScript`; the FAMILY
 > roll-up below is still `~`, because the family also holds the thread-safe and
 > async contexts (`—`) and merge algebra (`~`, pending a `collections/` fixture).
-> Everything outside the reactive graph is `—`. That is the whole claim: partial,
-> and visibly so.
+> The `LatestDurableProjectionCore` egress fixture also replays against the pure
+> core and reactive shell. Other families remain explicitly unimplemented.
 
 ## Coverage
 
@@ -104,6 +104,35 @@ scope.dispose()                 # tears down members in reverse creation order
 Reads inside a compute go through `k.read(cell)`, which forms the dependency
 edge. `ctx.peek(cell)` reads without forming one. The tracked read is `read()`
 rather than `get()` because `Object.get(property)` is a Godot builtin.
+
+### Latest-durable projection
+
+`LazilyLatestDurableProjectionCore` is the transport-free state machine and
+`LazilyLatestDurableProjection` is its reactive shell. The shell publishes one
+aggregate state-version source per real transition; consumers can depend on it
+through `state_reader()` and inspect a key with `state(key)` or the complete
+deterministic `snapshot()`.
+
+```gdscript
+var ctx := LazilyContext.new()
+var projection := Lazily.latest_durable_projection(ctx, 1)
+
+projection.upsert_desired("document", 1, serialized_document)
+var claim := projection.claim("document", projection.generation())
+if claim["claim"] == "claimed":
+	var envelope: Dictionary = claim["envelope"]
+	# Apply envelope["value"] to the external sink, then acknowledge this token.
+	projection.ack_applied(
+		envelope["key"], envelope["generation"], envelope["epoch"]
+	)
+```
+
+The command surface is `upsert_desired`, `claim`, `ack_applied`,
+`fail_retryable`, and `reconnect`. There is at most one claimed write per key;
+newer pending epochs supersede older pending work, and reconnect fences results
+from an older sink generation. This binding does not yet provide lock-backed or
+async reactive contexts, so it intentionally exposes core and synchronous
+reactive flavors only.
 
 ## Development
 

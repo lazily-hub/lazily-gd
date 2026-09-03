@@ -27,3 +27,11 @@ static func engine_supported() -> bool:
 	var info := Engine.get_version_info()
 	var running := Vector3i(info["major"], info["minor"], info["patch"])
 	return running >= MIN_GODOT
+
+
+## Construct a graph-backed latest-value durable projection.
+static func latest_durable_projection(
+	ctx: LazilyContext,
+	generation: int,
+) -> LazilyLatestDurableProjection:
+	return LazilyLatestDurableProjection.new(ctx, generation)

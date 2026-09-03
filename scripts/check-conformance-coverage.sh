@@ -222,6 +222,7 @@ fi
 # hard failure there, on purpose.
 IMPLEMENTED_FAMILY_PREFIXES=(
   "reactive-graph/"
+  "egress/"
 )
 
 # Fixtures in an IMPLEMENTED family that are still not replayed. These are the
@@ -240,6 +241,12 @@ IMPLEMENTED_FAMILY_PREFIXES=(
 # next — a silently wrong gap ledger, in the guard whose whole job is to make
 # gaps visible.
 KNOWN_UNCOVERED=(
+  # The generic egress-machine fixtures require retry-budget/window machinery;
+  # this binding currently implements only the latest-durable projection model.
+  "egress/egress_generation_fence.json"
+  "egress/egress_inflight_window.json"
+  "egress/egress_ordered_ack.json"
+  "egress/egress_retry_budget.json"
 )
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
