@@ -265,6 +265,80 @@ if [ ! -s "$MANIFEST" ]; then
   echo "      manifest is missing evidence, not evidence of absence." >&2
   exit 1
 fi
+
+# ── rung -1: is this manifest THIS RUN'S? (#lzstalemanifest) ─────────────────
+#
+# Every rung below it reasons about what the run DID, read off a file. This one
+# asks whether the file belongs to the invocation now asking. Nothing did, and
+# the answer was measurably no:
+#
+#   * `make conformance-coverage` with no suite run at all exited 0 reporting
+#     "22/156 canonical fixture(s) replayed" and "136/136 inventoried site(s)
+#     BOUND" — every number from the PREVIOUS invocation's file.
+#   * `LazilyBlockLedger.append_line` appends, and only `make test` truncates. A
+#     single scene driven by hand bypasses that recipe, so its 250 records landed
+#     ON TOP of the previous run's 317 and this guard reported the same full green
+#     from the union of two runs.
+#
+# lazily-kt's instance of this is a cached Gradle `:test`. Godot has no test
+# cache — gdUnit4 re-executes every time — so gd's exposure is the leftover file
+# rather than the skipped task. Same protocol closes both: one id per `make`
+# invocation, stamped into the evidence, REQUIRED by everything that reads it.
+#
+# Two markers, both required, because they answer different questions.
+#   `# lazily-run-id`       — written before Godot starts: this file is ours.
+#   `# lazily-run-complete` — appended only after the suite exited 0 and the
+#                             executed-count guard passed: the recipe finished.
+# The first alone accepts a correctly-stamped manifest from a run that died in
+# its first second; the second is what makes "the run ended" part of the
+# evidence rather than an assumption. Neither claims the CONTENT is complete —
+# rung 0's declared-equals-bound equality is the instrument for a mid-way abort,
+# which in GDScript reports zero failures while skipping every sibling key.
+#
+# REFUSES when the variable is unset rather than skipping. A guard that accepts
+# unstamped evidence whenever nobody set the variable is the original hole with
+# one extra step. There is deliberately NO opt-out flag: this repo's CI is a
+# single `make check` step (pinned by `ci-reach`), so no legitimate path runs
+# this script outside a make invocation that sets the id.
+if [ -z "${LAZILY_CONFORMANCE_RUN_ID:-}" ]; then
+  echo "FAIL: LAZILY_CONFORMANCE_RUN_ID is not set, so this guard cannot tell" >&2
+  echo "      whether $MANIFEST is THIS run's evidence or a leftover from an" >&2
+  echo "      earlier one. Run it through \`make check\` (or \`make" >&2
+  echo "      conformance-coverage\`), which generates one id per invocation and" >&2
+  echo "      stamps it into the manifest. Refusing rather than skipping: an" >&2
+  echo "      unstamped manifest accepted by default is the staleness hole with" >&2
+  echo "      an extra step." >&2
+  exit 1
+fi
+
+manifest_run_id="$(sed -n '1s/^# lazily-run-id //p' "$MANIFEST")"
+if [ -z "$manifest_run_id" ]; then
+  echo "FAIL: $MANIFEST carries no '# lazily-run-id' line on line 1." >&2
+  echo "      Wanted id: $LAZILY_CONFORMANCE_RUN_ID" >&2
+  echo "      Line 1 is: $(sed -n '1p' "$MANIFEST")" >&2
+  echo "      Either the file predates #lzstalemanifest, or it was written by" >&2
+  echo "      something other than \`make test\` — a hand-driven godot run" >&2
+  echo "      appends without stamping. Re-run \`make test\`." >&2
+  exit 1
+fi
+if [ "$manifest_run_id" != "$LAZILY_CONFORMANCE_RUN_ID" ]; then
+  echo "FAIL: $MANIFEST is a DIFFERENT run's evidence." >&2
+  echo "      found id:  $manifest_run_id" >&2
+  echo "      wanted id: $LAZILY_CONFORMANCE_RUN_ID" >&2
+  echo "      Every number this guard prints would describe that other run. Run" >&2
+  echo "      \`make test\` in this invocation, or \`make check\`, which does." >&2
+  exit 1
+fi
+if ! grep -qxF "# lazily-run-complete $LAZILY_CONFORMANCE_RUN_ID" "$MANIFEST"; then
+  echo "FAIL: $MANIFEST is stamped $LAZILY_CONFORMANCE_RUN_ID but carries no" >&2
+  echo "      matching '# lazily-run-complete' marker, so the suite did not run" >&2
+  echo "      to the end of the \`test\` recipe: a timeout kill, a parse error, a" >&2
+  echo "      non-zero gdUnit4 exit, or a zero-test run all stop before it. The" >&2
+  echo "      records present are a PARTIAL write, not a smaller true result." >&2
+  echo "      completion markers found:" >&2
+  grep -n '^# lazily-run-complete ' "$MANIFEST" >&2 || echo "        (none)" >&2
+  exit 1
+fi
 # The manifest carries TWO kinds of record since the assertion-block rung landed
 # (#lzgdblockledger): a bare `corpus/fixture.json` line means the file was
 # OPENED, and a TAB-separated `blocks-declared` / `blocks-bound` line belongs to
@@ -276,7 +350,11 @@ fi
 # `|| true` because `grep -v` exits 1 when it selects nothing, and under
 # `pipefail` that would abort here rather than at the `covered -eq 0` guard
 # below, which is the check that actually knows what an empty opened set means.
-OPENED="$(grep -v -e $'\t' "$MANIFEST" | sort -u || true)"
+# `^#` alongside the tab filter: the run-id and run-complete markers rung -1
+# reads are comment lines with no tab, so without excluding them here each one
+# would read as a fixture id naming no file and the evidence-channel check below
+# would report the manifest corrupt.
+OPENED="$(grep -v -e $'\t' -e '^#' "$MANIFEST" | sort -u || true)"
 
 missing=0
 total=0
@@ -556,6 +634,46 @@ except (OSError, UnicodeDecodeError) as exc:
         "       suite with LAZILY_CONFORMANCE_MANIFEST set to an ABSOLUTE path,\n"
         "       truncated first, which is what `make test` does. Do not hand-edit it:\n"
         "       it is the run's own evidence.\n" % (manifest_path, exc)
+    )
+    sys.exit(1)
+
+# The run-id rung again, in the SECOND reader of the same file
+# (#lzstalemanifest). The bash rung above already refused a stale manifest, and
+# today this guard only ever runs after it — but "only ever" is the property that
+# quietly stops holding. This one reads the file itself, so it checks the file
+# itself; a future caller that invokes this python twin directly cannot inherit
+# the bash rung by accident.
+#
+# Same shape, same refusal: no id in the environment is a FAILURE, not a skip.
+run_id = os.environ.get("LAZILY_CONFORMANCE_RUN_ID", "")
+if not run_id:
+    sys.stderr.write(
+        "ERROR: LAZILY_CONFORMANCE_RUN_ID is unset, so this guard cannot tell whether\n"
+        "       %s is this run's evidence. Refusing rather than\n"
+        "       skipping: unstamped evidence accepted by default is the staleness hole\n"
+        "       with an extra step. Drive it from `make check`.\n" % manifest_path
+    )
+    sys.exit(1)
+
+stamped = manifest_lines[0] if manifest_lines else ""
+if stamped != "# lazily-run-id %s" % run_id:
+    sys.stderr.write(
+        "ERROR: %s is not this run's evidence.\n"
+        "       line 1:    %r\n"
+        "       wanted:    %r\n"
+        "       Every magnitude below would describe some other run. Re-run `make test`\n"
+        "       in this invocation.\n"
+        % (manifest_path, stamped, "# lazily-run-id %s" % run_id)
+    )
+    sys.exit(1)
+
+if ("# lazily-run-complete %s" % run_id) not in manifest_lines:
+    sys.stderr.write(
+        "ERROR: %s is stamped %s but carries no matching\n"
+        "       `# lazily-run-complete` marker. The `test` recipe appends that only after\n"
+        "       the suite exited 0 and the executed-count guard passed, so what is here is\n"
+        "       a PARTIAL write from a run that stopped, not a smaller true result.\n"
+        % (manifest_path, run_id)
     )
     sys.exit(1)
 

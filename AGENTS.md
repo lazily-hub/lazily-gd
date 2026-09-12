@@ -88,6 +88,34 @@ named in a comment, or transcribed into a test, is present in a grep while never
 being replayed — lazily-cpp's queue tests drifted exactly that way. Observing the
 read is the only proof.
 
+Every rung in that guard reasons about what **this run** did, so the manifest has
+to be **this run's**. `make check` generates one `LAZILY_CONFORMANCE_RUN_ID` per
+invocation (simply expanded, so every reference is the same value), the `test`
+recipe writes `# lazily-run-id <id>` as line 1 when it truncates the manifest and
+appends `# lazily-run-complete <id>` only after the suite exited 0 and the
+executed-count guard passed, and **both readers of the file** — the bash rungs
+and the embedded python block guard — require both markers to match. An unset
+`LAZILY_CONFORMANCE_RUN_ID` is a FAILURE, not a skip, and there is no opt-out
+flag: CI is a single `make check` step, so nothing legitimately runs the guard
+outside a make invocation.
+
+Godot has no cached test task, so the exposure here is the **leftover file**, and
+it was measured. Before the run id, `make conformance-coverage` on its own — no
+suite run at all — exited 0 reporting `22/156 canonical fixture(s) replayed` and
+`136/136 inventoried site(s) BOUND` from the previous invocation's manifest; and
+a hand-driven single scene, which bypasses the truncating recipe, appended its
+250 records onto the previous run's 317 and the guard reported the same full
+green from the union. Both refuse now.
+
+The markers say the file is ours and the recipe finished. They do **not** claim
+the content is complete — a GDScript raise takes out the enclosing `for key in
+expect` loop with the runner's failure list still empty, so an abort can look
+clean. The content rungs are what catch that, verified against a manifest
+carrying both valid markers: a mid-file truncation is refused by the fixture
+rung, and removing every bind of three digests by rung 0. Individual bind
+records can be absorbed — 136 sites bind through 159 calls over 127 digests — but
+a bind that never happens cannot be.
+
 The guard states which families this binding **implements** rather than listing
 what it does not. An exclusion list needs editing every time the corpus grows,
 and the edit that never happens is the one that turns a gap green. A new family

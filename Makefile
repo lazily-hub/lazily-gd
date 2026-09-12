@@ -52,9 +52,73 @@ import: gdunit4
 # evidence" while the suite is green.
 export LAZILY_CONFORMANCE_MANIFEST := $(CURDIR)/build/conformance-fixtures-loaded.txt
 
+# ── the per-invocation run id (#lzstalemanifest) ──────────────────────────────
+#
+# Every rung in `conformance-coverage` reasons about what THIS run did. It reads
+# that from `$(LAZILY_CONFORMANCE_MANIFEST)`, which the `test` recipe above
+# truncates — but the guard runs in a SEPARATE process from the Godot run that
+# fills it, so the file on disk is not necessarily this invocation's.
+#
+# MEASURED here before this was added, so the hole is not hypothetical:
+#
+#   * `make conformance-coverage` on its own, with no suite run at all, exited 0
+#     reporting "22/156 canonical fixture(s) replayed" and "136/136 inventoried
+#     site(s) BOUND" — entirely from the PREVIOUS invocation's manifest.
+#   * a single scene run by hand (`godot -s .../GdUnitCmdTool.gd -a
+#     tests/conformance_test.gd`) does not pass through this recipe, so nothing
+#     truncates: it APPENDED its 250 records onto the previous run's 317, and the
+#     guard then reported the same full green from the union of two runs.
+#
+# Godot is not the cached-task case lazily-kt has (`> Task :test UP-TO-DATE`);
+# gdUnit4 re-executes every time and `test: import` has no way to be skipped.
+# gd's exposure is the LEFTOVER FILE, which the same protocol closes.
+#
+# `:=` is load-bearing. A recursively-expanded `=` re-runs `$(shell)` at every
+# reference, so the stamp written into the manifest and the value the guard
+# compares against would be DIFFERENT ids and every run would fail — closed, but
+# for a reason nobody could read off the message.
+#
+# Not overridable on purpose. There is no legitimate path that runs
+# `conformance-coverage` outside `make check` here (CI is a single `make check`
+# step, and `ci-reach` pins that), so an override would only ever be a way to
+# hand the guard an id matching a stale manifest.
+LAZILY_CONFORMANCE_RUN_ID := $(shell printf 'gd-%s-%s' "$$(date -u +%Y%m%dT%H%M%S%N)" "$$$$")
+export LAZILY_CONFORMANCE_RUN_ID
+
+# TWO markers, not one, and the second is the reason (#lzstalemanifest).
+#
+# `# lazily-run-id` is written by the truncation step, BEFORE Godot starts, so it
+# says only "this file belongs to this invocation" — a run that dies in its first
+# second leaves a correctly-stamped, empty manifest.
+#
+# `# lazily-run-complete` is appended only after the suite exited 0 through
+# `pipefail` AND the executed-count guard passed, so it says "the recipe reached
+# the end". It is a separate recipe line: make abandons the target on the first
+# failing line, so a `timeout` kill, a parse error, a non-zero gdUnit4 exit or a
+# zero-test run all leave the marker ABSENT.
+#
+# What it does NOT claim is completeness of the CONTENT. In GDScript a raise
+# takes out the enclosing `for key in expect` loop, leaving every sibling key
+# unasserted while the runner's own failure list stays empty (measured during
+# #lzflagcoercion as `4 errors | 0 failures`), so a mid-way abort can look clean.
+# The instrument for that is the CONTENT rungs, not this marker, and they were
+# measured against a manifest carrying BOTH valid markers: truncating it in the
+# middle is refused by the fixture rung (five `reactive-graph/` fixtures "NOT
+# opened"), and removing every bind of three digests is refused by rung 0 ("3
+# assertion block(s) ... bound by no runner"). One caveat, measured rather than
+# assumed: 136 sites bind through 159 bind CALLS over 127 distinct digests, so
+# deleting individual bind records can be absorbed by a duplicate. A bind that
+# never happens at all cannot be, which is the abort case.
+
 test: import
 	@mkdir -p $(REPORTS) $(CURDIR)/build
-	@: > $(LAZILY_CONFORMANCE_MANIFEST)
+	@test -n "$(LAZILY_CONFORMANCE_RUN_ID)" || { \
+		echo "ERROR: LAZILY_CONFORMANCE_RUN_ID came out EMPTY." >&2; \
+		echo "       The manifest would then be stamped with nothing and the guard" >&2; \
+		echo "       would accept any leftover file. Check that \`date -u +%N\` works" >&2; \
+		echo "       on this host." >&2; \
+		exit 1; }
+	@printf '# lazily-run-id %s\n' '$(LAZILY_CONFORMANCE_RUN_ID)' > $(LAZILY_CONFORMANCE_MANIFEST)
 	@set -o pipefail; $(TIMEOUT) $(TEST_TIMEOUT) $(GODOT) --headless --path . \
 		-s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
 		-a tests --continue --ignoreHeadlessMode 2>&1 | tee $(REPORTS)/gdunit4.log
@@ -73,6 +137,7 @@ test: import
 		exit 1; \
 	fi; \
 	echo "gdUnit4: $$executed test case(s) executed"
+	@printf '# lazily-run-complete %s\n' '$(LAZILY_CONFORMANCE_RUN_ID)' >> $(LAZILY_CONFORMANCE_MANIFEST)
 
 # Its own Godot process on purpose: inside the suite the kernel is already
 # resident, so the measurement would answer about the harness, not the kernel.
