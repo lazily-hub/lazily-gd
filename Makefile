@@ -6,10 +6,15 @@
 # bash this difference is invisible locally and only appears in CI.
 SHELL := /bin/bash
 
-.PHONY: all check test load-graph conformance-coverage gdunit4 import clean
+.PHONY: all check test load-graph conformance-coverage assertion-ordering-check gdunit4 import clean
 
 GODOT ?= godot
 REPORTS := build/reports
+
+# The canonical corpus AND the cross-binding static guards live in the sibling
+# checkout. CI clones it next to this repo (see .github/workflows/ci.yml), so the
+# default is the same path a developer uses.
+LAZILY_SPEC_DIR ?= ../lazily-spec
 
 # A hang is a distinct failure mode from a red test, and it needs its own guard:
 # an incompatible gdUnit4 fails to compile its CLI and then never exits, which on
@@ -85,7 +90,32 @@ load-graph: import
 conformance-coverage:
 	@scripts/check-conformance-coverage.sh
 
-check: test load-graph conformance-coverage
+# The cross-binding assertion-ordering guard (`#lzgdorderingguard`). Nine sibling
+# bindings ran this from their own `make check`; this one did not, and had no
+# entry in the guard's own CHECKS table either — so it was outside the guard
+# entirely. That is exactly the omission the guard's design note warns about
+# ("a new standalone target would be a guard every existing workflow could
+# silently omit"), arrived at by joining the family after the guard existed.
+#
+# It matters most here: this is the binding that PAID for an unpinned ordering
+# contract, hitting `#lzexpectedkeyorder` while its bind ledger was built
+# (`final_state` must be read before `after_publish` publishes, and
+# `after_publish` sorts alphabetically first).
+#
+# Fail CLOSED on a missing sibling, in the sibling guards' own wording rather
+# than a python traceback that reads like a broken toolchain: the checker lives
+# over there, so without it this gate verifies nothing.
+assertion-ordering-check:
+	@test -f $(LAZILY_SPEC_DIR)/scripts/check-assertion-ordering.py || { \
+	  echo "ERROR: canonical spec sibling not found at '$(LAZILY_SPEC_DIR)'."; \
+	  echo "       git clone https://github.com/lazily-hub/lazily-spec.git ../lazily-spec"; \
+	  echo "       (or override LAZILY_SPEC_DIR=/path/to/lazily-spec)"; \
+	  echo "       This is a hard failure, not a skip: the ordering checker lives in"; \
+	  echo "       the sibling, so without it this gate verifies nothing."; \
+	  exit 1; }
+	python3 $(LAZILY_SPEC_DIR)/scripts/check-assertion-ordering.py --binding gd --root .
+
+check: test load-graph conformance-coverage assertion-ordering-check
 
 clean:
 	rm -rf build addons/gdUnit4
