@@ -708,13 +708,30 @@ if unknown:
 # Fail CLOSED on a pin that cannot be read. Falling back to the default would
 # turn a typo in a CI environment into a silently different policy, which is the
 # vacuous green every rung in this file exists to refuse.
-EXPECTED_LEDGERED_BLOCKS_RAW = os.environ.get("EXPECTED_LEDGERED_BLOCKS", "0").strip()
-if not EXPECTED_LEDGERED_BLOCKS_RAW.isdigit():
+EXPECTED_LEDGERED_BLOCKS_RAW = os.environ.get("EXPECTED_LEDGERED_BLOCKS", "0")
+# ONE parse for the whole family (#lzpinparsestrict): a NON-EMPTY run of bare
+# ASCII digits `0`-`9`, and nothing else. Validated BEFORE any parse runs, and
+# deliberately stricter than both `int()` and `str.isdigit()`, because each of
+# those silently accepts a number nobody wrote: `int("1_0")` is 10 (PEP 515
+# separators), `int(" 7 ")` is 7, and `"\u0663".isdigit()` is TRUE for the
+# Arabic-Indic three. This reader used to be `.strip().isdigit()`, so `" 7 "`
+# became 7 and `٣` became 3. Refused now: whitespace around or inside, a leading
+# `+` or `-`, separators, a radix prefix, a float or an exponent, and any
+# non-ASCII digit. A negative falls out of the same check — no ledger size can
+# equal it, so it would make this rung unsatisfiable rather than exact. Leading
+# zeros are fine and `0` stays valid; this binding pins at zero.
+#
+# An UNSET variable takes the committed literal above. An EXPLICITLY EMPTY one is
+# a REJECTION, not a fall-through to it: `os.environ.get(NAME, DEFAULT)`
+# distinguishes the two, and whoever exported the wrong thing is the one person
+# who cannot see that it was ignored.
+if not EXPECTED_LEDGERED_BLOCKS_RAW or EXPECTED_LEDGERED_BLOCKS_RAW.strip("0123456789"):
     sys.stderr.write(
-        "ERROR: EXPECTED_LEDGERED_BLOCKS=%r is not a non-negative integer. This pin is\n"
-        "       the one side of the check the run cannot move, so an unreadable pin is\n"
-        "       REFUSED rather than defaulted — a default would make the policy silently\n"
-        "       whatever the typo implied.\n" % EXPECTED_LEDGERED_BLOCKS_RAW
+        "ERROR: EXPECTED_LEDGERED_BLOCKS=%r is not a non-negative integer in bare ASCII\n"
+        "       digits (#lzpinparsestrict). This pin is the one side of the check the run\n"
+        "       cannot move, so an unreadable pin is REFUSED rather than defaulted — not\n"
+        "       even an empty one: a default would make the policy silently whatever the\n"
+        "       typo implied.\n" % EXPECTED_LEDGERED_BLOCKS_RAW
     )
     sys.exit(1)
 EXPECTED_LEDGERED_BLOCKS = int(EXPECTED_LEDGERED_BLOCKS_RAW)
