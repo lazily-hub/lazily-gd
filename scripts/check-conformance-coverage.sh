@@ -384,6 +384,11 @@ echo "conformance coverage OK: $covered/$total canonical fixture(s) replayed;" \
 # block cannot be bound here yet — so it stays VISIBLE on every run instead of
 # invisible, which is the state this whole rung replaced.
 #
+# It may only SHRINK. `MAX_LEDGERED_BLOCKS` below is a ceiling on its size,
+# defaulting to zero, because checks 1-3 make this an EQUALITY against the run
+# and an equality is satisfied by any consistent pair — detaching a bind and
+# adding its matching entry here passes both directions (#lzledgerceiling).
+#
 # EMPTY, and that is the point: all 136 sites in the opened set are bound. The
 # one that was not — `.expected` in
 # `reactive-graph/scope_teardown_equals_fold_of_disposals.json` — is now bound by
@@ -657,6 +662,53 @@ if unknown:
     )
     sys.exit(1)
 
+# ---- 3b. a CEILING on how much may be excused (#lzledgerceiling) ----------
+#
+# Checks 1-3 make the ledger an EQUALITY against the run: an unbound block
+# nobody excused fails, and an excuse the run outlived fails. That is worth
+# having and it is not enough, because an equality is satisfied by ANY
+# CONSISTENT PAIR. A commit that detaches N binds AND writes the N matching
+# entries passes both directions. MEASURED here, not argued: detaching the bind
+# for one block and adding its `fixture|where|reason` left the whole of
+# `make check` green at exit 0, reporting "135/136 ... both asserted EQUAL".
+# The magnitude rung below cannot see it either — the site is still DECLARED,
+# merely no longer bound, so 5a/5b/5c all still agree.
+#
+# What closes it is not a COUNT of what is excused — equal sets have equal
+# counts, so a mirrored number carries no information the equality does not and
+# only adds a second edit site that drifts (the `MIN_BLOCKS = 30` defect in a
+# new costume, which is why the magnitude above is derived and never typed).
+# What closes it is a CEILING on how much MAY be. A ceiling is POLICY rather
+# than measurement: it does not move when the corpus moves, and it never needs
+# re-pinning except deliberately and upward, in review.
+#
+# Zero, because gd's ledger is empty and all 136 sites in the opened set are
+# bound. An empty ledger does not make this line a no-op: a ceiling of zero is
+# what stops the FIRST excuse from being added silently, in the same commit as
+# the regression that needed it. Raising it is the explicit act.
+#
+# Raise it only for a genuinely unbindable block, and expect to be asked why the
+# capability cannot exist here. Never raise it to park a block somebody has not
+# got round to binding — that is the laundering this rung exists to refuse. The
+# env override is for probing the guard itself, not for a build to opt out of.
+MAX_LEDGERED_BLOCKS = int(os.environ.get("MAX_LEDGERED_BLOCKS", "0"))
+if len(excuses) > MAX_LEDGERED_BLOCKS:
+    sys.stderr.write(
+        "ERROR: %d assertion-block site(s) are ledgered as unbound; the ceiling is %d.\n"
+        "       KNOWN_UNBOUND_BLOCKS may only SHRINK. The checks above assert only that\n"
+        "       the ledger and the run AGREE, which any consistent pair satisfies: a\n"
+        "       commit that detaches binds and writes the matching entries passes them\n"
+        "       both ways, and the magnitude below still agrees because the sites are\n"
+        "       declared either way. This ceiling is what makes enlarging the excused\n"
+        "       set an explicit act rather than a side effect.\n"
+        "       Bind the block with LazilyBlockLedger.bind() and assert its keys. Raise\n"
+        "       MAX_LEDGERED_BLOCKS only for a genuinely unbindable one, with a reason:\n"
+        % (len(excuses), MAX_LEDGERED_BLOCKS)
+    )
+    for site in sorted(excuses):
+        sys.stderr.write('         %s — "%s"\n' % (site, excuses[site]))
+    sys.exit(1)
+
 # ---- 4. the zero-guard on each dimension ----------------------------------
 #
 # The whole reason this rung needs a magnitude. Without it, zero declared blocks
@@ -743,13 +795,16 @@ if declared != expected:
 
 print(
     "assertion-block bind OK: %d/%d inventoried site(s) BOUND to a runner "
-    "(%d declared unbindable; derived %d sites AND %d distinct digests from %d opened "
+    "(%d declared unbindable of at most %d, a CEILING that makes enlarging the excused "
+    "set an explicit act rather than a side effect of detaching a bind; derived %d sites "
+    "AND %d distinct digests from %d opened "
     "fixtures, both asserted EQUAL, and the site -> digest maps are identical; "
     "content-keyed, so a runner's block NAME cannot satisfy it)"
     % (
         len(declared) - len(excuses),
         len(declared),
         len(excuses),
+        MAX_LEDGERED_BLOCKS,
         len(expected),
         len(expected_digests),
         len(opened),
