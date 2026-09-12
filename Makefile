@@ -6,7 +6,7 @@
 # bash this difference is invisible locally and only appears in CI.
 SHELL := /bin/bash
 
-.PHONY: all check test load-graph conformance-coverage assertion-ordering-check gdunit4 import clean
+.PHONY: all check test load-graph conformance-coverage assertion-ordering-check ci-reach gdunit4 import clean
 
 GODOT ?= godot
 REPORTS := build/reports
@@ -115,7 +115,21 @@ assertion-ordering-check:
 	  exit 1; }
 	python3 $(LAZILY_SPEC_DIR)/scripts/check-assertion-ordering.py --binding gd --root .
 
-check: test load-graph conformance-coverage assertion-ordering-check
+# CI-reachability guard (`#lzcheckcireachguard`, ported here by #lzgdcireach).
+# Fails when `make check` runs a gate no CI workflow step reaches — the drift that
+# hid #lzinteroppeerci in every binding for months. It guards ITSELF by being in
+# `check`, so CI has to run it too or it reports itself missing.
+#
+# SCOPE HERE, stated because it differs from the nine siblings. This repo's CI is
+# a SINGLE `make check` step, so every gate is reached transitively and this guard
+# cannot catch a missing per-gate CI step — there are no per-gate steps to miss.
+# What it does pin is the INVOCATION: narrow that step to `make test` and
+# load-graph, conformance-coverage and assertion-ordering-check go unreached and
+# this fires. Measured, not assumed — see the commit that added it.
+ci-reach:
+	./scripts/check-ci-reach.sh
+
+check: test load-graph conformance-coverage assertion-ordering-check ci-reach
 
 clean:
 	rm -rf build addons/gdUnit4
