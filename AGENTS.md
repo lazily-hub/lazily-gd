@@ -116,15 +116,40 @@ rung, and removing every bind of three digests by rung 0. Individual bind
 records can be absorbed — 136 sites bind through 159 calls over 127 digests — but
 a bind that never happens cannot be.
 
+Both halves of that protocol are **spelled once**. The stamp markers exist where
+the `test` recipe writes them and where the guard reads them; the manifest's
+record tags exist in `LazilyBlockLedger.append_line` and in the guard's python
+twin. A drift inside either pair fails closed — the reader matches nothing — so it
+was safe, and it presented as a staleness bug instead of as the typo it is. The
+guard now keeps one scalar per spelling, hands them to the twin in its
+environment so the twin carries no literal of its own, and refuses a
+disagreement after reading the Makefile's real `printf` formats and the
+recorder's real `append_line` formats — matched by role, so `>` is the stamp and
+`>>` is the completion marker. One character changed on either side names both
+sides and the file and line that moved (#lzstampprefixdrift).
+
+Stamping also made the evidence file **non-empty**, so nothing here tests its
+SIZE any more (#lzstampsatisfiesnonempty). A 52-byte stamp satisfies `test -s`,
+and a stamp plus a completion marker is 110 bytes of file describing zero
+observations — while before the stamp the recipe truncated with `: >` and that
+same `-s` test was exactly what caught a recorder writing somewhere else. The
+existence arm now asks only whether the file is there; the count of NON-MARKER
+lines, placed under both markers so a run that died early is already refused for
+its own reason, is what asks whether the recorder reached it. Measured: a
+stamped, complete, record-free manifest used to reach the fixture loop and
+accuse 22 runners of not opening fixtures they never got the chance to open. It
+now names the manifest, in one message.
+
 The guard states which families this binding **implements** rather than listing
 what it does not. An exclusion list needs editing every time the corpus grows,
 and the edit that never happens is the one that turns a gap green. A new family
 is excused automatically; a new `reactive-graph/` fixture fails until replayed or
 named in `KNOWN_UNCOVERED` with a reason.
 
-Re-drive it after changing the runner. Proven branches: empty manifest fails as
-missing evidence, a manifest entry naming no real file fails as a corrupt
-evidence channel, and dropping a replayed fixture fails as unexcused. Also
+Re-drive it after changing the runner. Proven branches: an absent manifest fails
+as missing evidence, a stamped and completed one carrying no records fails as a
+recorder that never reached it, a manifest entry naming no real file fails as a
+corrupt evidence channel, and dropping a replayed fixture fails as unexcused. Also
 perturb the kernel — making invalidation one-level-only must redden
 `transitive_invalidation_reaches_depth` at depth 2 and beyond. A replay that
 survives that perturbation is not replaying anything.

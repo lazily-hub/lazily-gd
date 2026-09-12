@@ -186,6 +186,193 @@ print(
 )
 CORPUS_ROOT_GUARD
 
+# ── the manifest's SPELLINGS, coupled to their PRODUCERS (#lzstampprefixdrift) ─
+#
+# Every marker and record tag in the evidence file exists TWICE: once where it is
+# WRITTEN and once where it is READ. The two stamp markers are written by the
+# `test` recipe in the Makefile — this binding stamps at TRUNCATION, not from the
+# recorder — and read by the rungs below and by the python twin at the bottom of
+# this file. The record tags are written by `LazilyBlockLedger.append_line` and
+# read by that same twin.
+#
+# A drift inside a pair FAILS CLOSED: the reader matches nothing. So it is safe,
+# and it is a terrible diagnostic. A one-character typo in a `printf` format
+# presents as "this manifest is not this run's evidence", which sends whoever
+# reads it hunting a staleness bug that does not exist; a typo in a record tag
+# presents as the run having inventoried nothing. lazily-kt named the shape and
+# lazily-go closed it first, by coupling its recorder's constant to the guard's
+# prefix in a test rather than restating the literal.
+#
+# So: ONE definition per spelling, here. The bash rungs use these, the python
+# twin receives them in its environment and carries no literal of its own, and
+# the guard below reads what the PRODUCERS actually write out of their own
+# sources. Restating either literal a third time is the whole defect — it would
+# add a third place to drift — so nothing here is typed twice: the Makefile's
+# real `printf` formats and the ledger's real `append_line` formats are parsed.
+RUN_ID_PREFIX='# lazily-run-id'
+RUN_COMPLETE_PREFIX='# lazily-run-complete'
+DECLARED_TAG='blocks-declared'
+DECLARED_FIELDS='4'
+BOUND_TAG='blocks-bound'
+BOUND_FIELDS='2'
+
+# A SOURCE scan, so it runs before the corpus-presence gate below for the same
+# reason the corpus-root guard does: that gate exits 0 on a checkout without the
+# sibling, and a checkout without the sibling is exactly where someone edits a
+# printf format. It also runs before every rung that READS the manifest, so a
+# drift is reported as a drift instead of as the stale-evidence failure it
+# causes.
+python3 - "$RUN_ID_PREFIX" "$RUN_COMPLETE_PREFIX" \
+  "$DECLARED_TAG" "$DECLARED_FIELDS" "$BOUND_TAG" "$BOUND_FIELDS" \
+  <<'MARKER_SPELLING_GUARD' || exit 1
+import re
+import sys
+
+want_run_id, want_complete = sys.argv[1], sys.argv[2]
+want_declared, want_declared_fields = sys.argv[3], int(sys.argv[4])
+want_bound, want_bound_fields = sys.argv[5], int(sys.argv[6])
+
+MAKEFILE = "Makefile"
+LEDGER = "tests/conformance/block_ledger.gd"
+
+# The stamp markers, matched by ROLE rather than by name: the one written with
+# `>` truncates and is therefore the run-id stamp, the one written with `>>`
+# appends and is therefore the completion marker. That also pins the pair the
+# right way round — swapping them would stamp a leftover manifest without
+# clearing it, which is the hole #lzstalemanifest closed.
+STAMP = re.compile(
+    r"^\s*@?printf\s+'([^']*)'\s+'\$\(LAZILY_CONFORMANCE_RUN_ID\)'\s*"
+    r"(>>?)\s*\$\(LAZILY_CONFORMANCE_MANIFEST\)\s*$"
+)
+# `<prefix> %s\n`, with `\n` as the two characters `printf` interprets. The rungs
+# read the id as whatever follows the prefix and ONE space, so a format that
+# ends any other way is refused rather than quietly mis-parsed.
+FORMAT_TAIL = " %s\\n"
+APPEND = re.compile(r'append_line\(\s*"((?:[^"\\]|\\.)*)"')
+
+problems = []
+
+
+def numbered(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError as exc:
+        sys.stderr.write(
+            "ERROR: cannot read %s (%s). The spelling this guard reads the manifest\n"
+            "       with cannot then be checked against the code that WRITES it, and\n"
+            "       reporting OK would be a pass over nothing (#lzvacuousrun).\n"
+            % (path, exc)
+        )
+        sys.exit(1)
+    return list(enumerate(body.splitlines(), 1))
+
+
+# ---- the two stamp markers, read off the `test` recipe ---------------------
+stamps = {}
+for lineno, line in numbered(MAKEFILE):
+    if line.lstrip().startswith("#"):
+        continue
+    match = STAMP.match(line)
+    if match is None:
+        continue
+    fmt, redirect = match.group(1), match.group(2)
+    if not fmt.endswith(FORMAT_TAIL):
+        problems.append(
+            "%s:%d stamps the manifest with the format %r, which does not end in %r"
+            % (MAKEFILE, lineno, fmt, FORMAT_TAIL)
+        )
+        continue
+    stamps.setdefault(redirect, []).append((lineno, fmt[: -len(FORMAT_TAIL)]))
+
+for role, redirect, wanted in (
+    ("run-id stamp", ">", want_run_id),
+    ("run-complete marker", ">>", want_complete),
+):
+    written = stamps.get(redirect, [])
+    if len(written) != 1:
+        problems.append(
+            "%s has %d recipe line(s) writing the %s (`printf '<fmt>' "
+            "'$(LAZILY_CONFORMANCE_RUN_ID)' %s $(LAZILY_CONFORMANCE_MANIFEST)`); "
+            "expected exactly 1, and a guard that found none compared nothing"
+            % (MAKEFILE, len(written), role, redirect)
+        )
+        continue
+    lineno, prefix = written[0]
+    if prefix != wanted:
+        problems.append(
+            "the %s DRIFTED: %s:%d writes %r, this guard reads %r"
+            % (role, MAKEFILE, lineno, prefix, wanted)
+        )
+
+# ---- the record tags, read off the recorder's own formats ------------------
+records = {}
+for lineno, line in numbered(LEDGER):
+    if line.lstrip().startswith("#"):
+        continue
+    for match in APPEND.finditer(line):
+        fields = match.group(1).split("\\t")
+        records.setdefault(fields[0], []).append((lineno, len(fields)))
+
+if not records:
+    problems.append(
+        "%s carries no `append_line(\"...\")` record format at all, so the tags below "
+        "were compared against nothing (#lzvacuousrun)" % LEDGER
+    )
+else:
+    if sorted(records) != sorted([want_declared, want_bound]):
+        problems.append(
+            "%s writes the record tag(s) %s; the python twin in this script parses %s. "
+            "A tag it does not parse is DROPPED, and rung 0 then reasons about a "
+            "smaller manifest than the run wrote"
+            % (
+                LEDGER,
+                ", ".join(repr(t) for t in sorted(records)),
+                ", ".join(repr(t) for t in sorted([want_declared, want_bound])),
+            )
+        )
+    for tag, arity in ((want_declared, want_declared_fields), (want_bound, want_bound_fields)):
+        for lineno, count in records.get(tag, []):
+            if count != arity:
+                problems.append(
+                    "%s:%d writes a %r record of %d tab-separated field(s); the python "
+                    "twin accepts only %d and ignores every other line"
+                    % (LEDGER, lineno, tag, count, arity)
+                )
+
+if problems:
+    sys.stderr.write(
+        "ERROR: the manifest spellings this guard READS have drifted from the code\n"
+        "       that WRITES them (#lzstampprefixdrift). Nothing below would then\n"
+        "       recognise valid evidence, and each rung would report the drift as the\n"
+        "       failure it causes — stale evidence, or an empty inventory — rather\n"
+        "       than as the typo it is:\n"
+    )
+    for problem in problems:
+        sys.stderr.write("         %s\n" % problem)
+    sys.stderr.write(
+        "       Fix whichever side moved. Both spellings have exactly ONE definition:\n"
+        "       the producer's format string, and the scalar this script hands to every\n"
+        "       reader including its own python twin.\n"
+    )
+    sys.exit(1)
+
+print(
+    "marker spelling OK: %s stamps %r then %r, %s records %r/%d and %r/%d field(s)"
+    " — each read from its producer, none restated in the guard"
+    % (
+        MAKEFILE,
+        want_run_id,
+        want_complete,
+        LEDGER,
+        want_declared,
+        want_declared_fields,
+        want_bound,
+        want_bound_fields,
+    )
+)
+MARKER_SPELLING_GUARD
+
 SPEC_DIR="${LAZILY_SPEC_CONFORMANCE_DIR:-../lazily-spec/conformance}"
 
 # A missing corpus is a legitimate local state (no sibling checkout) and an
@@ -258,7 +445,21 @@ KNOWN_UNCOVERED=(
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
 
-if [ ! -s "$MANIFEST" ]; then
+# EXISTENCE only, deliberately — this was `[ ! -s ]` and the run-id protocol took
+# its real case away (#lzstampsatisfiesnonempty). Before the stamp the recipe
+# truncated with `: >` and a detached recorder left a ZERO-BYTE file, so `-s`
+# caught "the suite ran without the recorder attached" and said exactly that.
+# Now the recipe writes a 52-byte stamp before Godot starts, so `-s` is satisfied
+# by the stamp alone and that case fell through to the fixture loop, which blamed
+# 22 runners for not opening fixtures they never got the chance to open. Measured
+# here, not argued.
+#
+# So the size test moved DOWN, below the markers, where it can count RECORDS and
+# name the right fault. This arm is what remains of the check: the file is not
+# there at all. A zero-byte one falls to the run-id rung below, whose message —
+# "written by something other than \`make test\`" — is the right one for a file
+# somebody truncated without stamping.
+if [ ! -f "$MANIFEST" ]; then
   echo "FAIL: no conformance manifest at $MANIFEST." >&2
   echo "      Run the suite with LAZILY_CONFORMANCE_MANIFEST set to an ABSOLUTE" >&2
   echo "      path so the recorder attaches (\`make check\` does this). An absent" >&2
@@ -311,11 +512,19 @@ if [ -z "${LAZILY_CONFORMANCE_RUN_ID:-}" ]; then
   exit 1
 fi
 
-manifest_run_id="$(sed -n '1s/^# lazily-run-id //p' "$MANIFEST")"
+# Prefix-stripped with a bash `case`, not a `sed` expression: the prefix is a
+# VARIABLE now (#lzstampprefixdrift), and interpolating one into a `s///` makes
+# its characters regex rather than text. Exact, literal, and it keeps the
+# "unmatched means empty" semantics the check below is written against.
+manifest_line1="$(sed -n '1p' "$MANIFEST")"
+manifest_run_id=""
+case "$manifest_line1" in
+  "$RUN_ID_PREFIX "*) manifest_run_id="${manifest_line1#"$RUN_ID_PREFIX "}" ;;
+esac
 if [ -z "$manifest_run_id" ]; then
-  echo "FAIL: $MANIFEST carries no '# lazily-run-id' line on line 1." >&2
+  echo "FAIL: $MANIFEST carries no '$RUN_ID_PREFIX' line on line 1." >&2
   echo "      Wanted id: $LAZILY_CONFORMANCE_RUN_ID" >&2
-  echo "      Line 1 is: $(sed -n '1p' "$MANIFEST")" >&2
+  echo "      Line 1 is: $manifest_line1" >&2
   echo "      Either the file predates #lzstalemanifest, or it was written by" >&2
   echo "      something other than \`make test\` — a hand-driven godot run" >&2
   echo "      appends without stamping. Re-run \`make test\`." >&2
@@ -329,14 +538,48 @@ if [ "$manifest_run_id" != "$LAZILY_CONFORMANCE_RUN_ID" ]; then
   echo "      \`make test\` in this invocation, or \`make check\`, which does." >&2
   exit 1
 fi
-if ! grep -qxF "# lazily-run-complete $LAZILY_CONFORMANCE_RUN_ID" "$MANIFEST"; then
+if ! grep -qxF "$RUN_COMPLETE_PREFIX $LAZILY_CONFORMANCE_RUN_ID" "$MANIFEST"; then
   echo "FAIL: $MANIFEST is stamped $LAZILY_CONFORMANCE_RUN_ID but carries no" >&2
-  echo "      matching '# lazily-run-complete' marker, so the suite did not run" >&2
+  echo "      matching '$RUN_COMPLETE_PREFIX' marker, so the suite did not run" >&2
   echo "      to the end of the \`test\` recipe: a timeout kill, a parse error, a" >&2
   echo "      non-zero gdUnit4 exit, or a zero-test run all stop before it. The" >&2
   echo "      records present are a PARTIAL write, not a smaller true result." >&2
   echo "      completion markers found:" >&2
-  grep -n '^# lazily-run-complete ' "$MANIFEST" >&2 || echo "        (none)" >&2
+  grep -nF "$RUN_COMPLETE_PREFIX " "$MANIFEST" >&2 || echo "        (none)" >&2
+  exit 1
+fi
+
+# ── rung -1b: the stamp is not a RECORD (#lzstampsatisfiesnonempty) ──────────
+#
+# Stamping an evidence file makes it non-empty, so "the recorder produced
+# evidence" can no longer be read off the file's SIZE. It is read off the record
+# count instead, which is what the `[ ! -s ]` test above used to mean and can no
+# longer tell: a 52-byte stamp satisfies `-s`, and a stamp plus a completion
+# marker is 110 bytes of file describing zero observations.
+#
+# Placed HERE, under both markers, so each fault keeps its own diagnosis. A run
+# that died early is refused above, by the missing completion marker, which is
+# the true story for it. What reaches this line is a recipe that RAN TO THE END
+# over a manifest holding nothing — a recorder writing somewhere else (a
+# relative LAZILY_CONFORMANCE_MANIFEST resolves against Godot's working
+# directory, not this one), or a loader that stopped recording. Neither is a
+# smaller true result, and neither is the corpus's fault.
+#
+# Records, not lines: the two markers are lines and they are not evidence of
+# anything the run OBSERVED. `|| true` because `grep -c` exits 1 when it counts
+# zero, which is precisely the case being tested.
+records="$(grep -c -v -e '^#' -e '^$' "$MANIFEST" || true)"
+if [ "${records:-0}" -eq 0 ]; then
+  echo "FAIL: $MANIFEST carries its run markers and NOT ONE record." >&2
+  echo "      The \`test\` recipe stamps this file before Godot starts and appends" >&2
+  echo "      the completion marker after the suite exits 0, so a stamped, complete," >&2
+  echo "      record-free manifest is a run whose RECORDER never reached it — not a" >&2
+  echo "      run that legitimately observed nothing. Stamping made the file" >&2
+  echo "      non-empty, so its SIZE can no longer answer this; the count of" >&2
+  echo "      non-marker lines can, and it is zero." >&2
+  echo "      Check that LAZILY_CONFORMANCE_MANIFEST is the ABSOLUTE path the" >&2
+  echo "      recorder writes (\`make check\` exports one) and that" >&2
+  echo "      tests/conformance/fixture_loader.gd still records every open." >&2
   exit 1
 fi
 # The manifest carries TWO kinds of record since the assertion-block rung landed
@@ -492,6 +735,49 @@ import struct
 import sys
 
 manifest_path, spec_dir = sys.argv[1], sys.argv[2]
+
+# ---- the marker and record spellings, from the ONE definition --------------
+#
+# Received, never restated (#lzstampprefixdrift). This block used to spell
+# `"# lazily-run-id %s"` and `"blocks-declared"` itself, which made three
+# definitions of the stamp prefix — the Makefile's printf, the bash rung's sed,
+# and this — held together by a comment. The MARKER_SPELLING_GUARD above reads
+# the Makefile's and the recorder's real formats and refuses a disagreement, and
+# these arrive from the same scalars it checked.
+#
+# Set on the invocation line, so an inline assignment overrides anything ambient
+# and a missing one is a FAILURE: a reader that falls back to a default spelling
+# would accept a manifest written in a different one, which is the drift with an
+# extra step.
+def spelling(name):
+    value = os.environ.get(name, "")
+    if not value:
+        sys.stderr.write(
+            "ERROR: %s reached the block guard EMPTY, so this guard does not know how\n"
+            "       the manifest it is about to read is SPELLED. Refusing rather than\n"
+            "       assuming a default: the guard and the recorder would then disagree\n"
+            "       silently and every record would read as absent.\n" % name
+        )
+        sys.exit(1)
+    return value
+
+
+def arity(name):
+    value = spelling(name)
+    if value.strip("0123456789"):
+        sys.stderr.write(
+            "ERROR: %s=%r is not a field count in bare ASCII digits.\n" % (name, value)
+        )
+        sys.exit(1)
+    return int(value)
+
+
+MARKER_RUN_ID = spelling("MARKER_RUN_ID")
+MARKER_RUN_COMPLETE = spelling("MARKER_RUN_COMPLETE")
+RECORD_DECLARED_TAG = spelling("RECORD_DECLARED_TAG")
+RECORD_BOUND_TAG = spelling("RECORD_BOUND_TAG")
+RECORD_DECLARED_FIELDS = arity("RECORD_DECLARED_FIELDS")
+RECORD_BOUND_FIELDS = arity("RECORD_BOUND_FIELDS")
 
 # ---- the excuse ledger, with its three staleness checks --------------------
 excuses = {}
@@ -656,24 +942,24 @@ if not run_id:
     sys.exit(1)
 
 stamped = manifest_lines[0] if manifest_lines else ""
-if stamped != "# lazily-run-id %s" % run_id:
+if stamped != "%s %s" % (MARKER_RUN_ID, run_id):
     sys.stderr.write(
         "ERROR: %s is not this run's evidence.\n"
         "       line 1:    %r\n"
         "       wanted:    %r\n"
         "       Every magnitude below would describe some other run. Re-run `make test`\n"
         "       in this invocation.\n"
-        % (manifest_path, stamped, "# lazily-run-id %s" % run_id)
+        % (manifest_path, stamped, "%s %s" % (MARKER_RUN_ID, run_id))
     )
     sys.exit(1)
 
-if ("# lazily-run-complete %s" % run_id) not in manifest_lines:
+if ("%s %s" % (MARKER_RUN_COMPLETE, run_id)) not in manifest_lines:
     sys.stderr.write(
         "ERROR: %s is stamped %s but carries no matching\n"
-        "       `# lazily-run-complete` marker. The `test` recipe appends that only after\n"
+        "       `%s` marker. The `test` recipe appends that only after\n"
         "       the suite exited 0 and the executed-count guard passed, so what is here is\n"
         "       a PARTIAL write from a run that stopped, not a smaller true result.\n"
-        % (manifest_path, run_id)
+        % (manifest_path, run_id, MARKER_RUN_COMPLETE)
     )
     sys.exit(1)
 
@@ -681,9 +967,9 @@ declared = {}
 bound = set()
 for line in manifest_lines:
     fields = line.split("\t")
-    if fields[0] == "blocks-declared" and len(fields) == 4:
+    if fields[0] == RECORD_DECLARED_TAG and len(fields) == RECORD_DECLARED_FIELDS:
         declared[fields[3]] = fields[2]
-    elif fields[0] == "blocks-bound" and len(fields) == 2:
+    elif fields[0] == RECORD_BOUND_TAG and len(fields) == RECORD_BOUND_FIELDS:
         bound.add(fields[1])
 
 # ---- the DERIVED expectation ----------------------------------------------
@@ -1013,5 +1299,11 @@ command -v python3 >/dev/null 2>&1 || {
 # array for lazily-spec's check-corpus-floors.mjs to classify.
 FAMILY_PREFIX_LEDGER="$(printf '%s\n' ${IMPLEMENTED_FAMILY_PREFIXES[@]+"${IMPLEMENTED_FAMILY_PREFIXES[@]}"})" \
 KNOWN_UNCOVERED_LEDGER="$(printf '%s\n' ${KNOWN_UNCOVERED[@]+"${KNOWN_UNCOVERED[@]}"})" \
+MARKER_RUN_ID="$RUN_ID_PREFIX" \
+MARKER_RUN_COMPLETE="$RUN_COMPLETE_PREFIX" \
+RECORD_DECLARED_TAG="$DECLARED_TAG" \
+RECORD_DECLARED_FIELDS="$DECLARED_FIELDS" \
+RECORD_BOUND_TAG="$BOUND_TAG" \
+RECORD_BOUND_FIELDS="$BOUND_FIELDS" \
 python3 -c "$BLOCK_GUARD_PY" "$MANIFEST" "$SPEC_DIR" \
   ${KNOWN_UNBOUND_BLOCKS[@]+"${KNOWN_UNBOUND_BLOCKS[@]}"}
