@@ -268,6 +268,65 @@ own_commands() {
 	dry_run "$target" | tail -n +"$((prefix + 1))"
 }
 
+# ── every recipe this guard reads comes from `make -n`, which can FAIL ────────
+#
+# `dry_run` above ends in `|| true` and discards stderr. That is RIGHT for the
+# legitimate zero it exists for: a recipe whose every line is a make diagnostic
+# selects nothing through `grep -v` and genuinely carries no command. It is also
+# indistinguishable from `make -n` FAILING, which prints nothing to stdout and
+# exits nonzero — so a target whose dry run failed reads as "recipe runs no
+# checkable command", which this guard reports as `no gate` and does NOT require
+# CI to reach.
+#
+# MEASURED as a false GREEN, not a misdiagnosis. Giving `test` one prerequisite
+# with no rule (`test: import does-not-exist.stamp`) made `make -n test` exit 2
+# with "No rule to make target 'does-not-exist.stamp'", `2>/dev/null` swallowed
+# it, and this guard printed
+#
+#     no gate  test    recipe runs no checkable command
+#     check-ci-reach: OK — 6 target(s) reached by CI, 0 excused, 2 carrying no gate
+#
+# at exit 0, while `test` — the target carrying the whole suite and its
+# executed-count guard — silently stopped being required in CI. The aggregate
+# vacuity check at the bottom of this script cannot see it: the other six targets
+# still carry gates, so it stays satisfied. lazily-py measured this shape first.
+#
+# The reachability judgement that missed it is worth recording, because it reads
+# as sound: no target in this Makefile has a file prerequisite, so no `make -n`
+# here can fail. That is a property of the Makefile AS WRITTEN, and this guard's
+# whole job is to survive the edit that changes it. Adding a stamp file, a
+# generated header or a vendored directory as a prerequisite is an ordinary
+# commit, and it disarms the guard without touching the guard.
+#
+# Probed HERE, in the MAIN shell, and deliberately NOT inside `dry_run`: that
+# function runs inside `$(...)` in `own_commands`, so an `exit 1` there kills
+# only the subshell and the caller reads back the same empty output it always
+# did. The status has to be examined where it can still end the script.
+#
+# EVERY target in the closure, not just the root. The root alone does catch this
+# instance — a bad prerequisite anywhere in the tree fails `make -n check` too —
+# but a per-target probe names the target that broke instead of blaming the
+# aggregate, and it still holds for a closure member whose own dry run fails
+# while the root's does not.
+while IFS= read -r target; do
+	[ -n "$target" ] || continue
+	if ! make_n_stderr="$("$MAKE_BIN" -n "$target" 2>&1 >/dev/null)"; then
+		echo "check-ci-reach: \`$MAKE_BIN -n $target\` FAILED, so this guard cannot read that" >&2
+		echo "                target's recipe. An unreadable recipe is EMPTY here, and an empty" >&2
+		echo "                recipe reads as 'carrying no gate' — which is not required to" >&2
+		echo "                appear in CI at all, so the target would silently stop being" >&2
+		echo "                enforced while this guard reported OK. That is missing evidence," >&2
+		echo "                not evidence of absence." >&2
+		echo "                make said:" >&2
+		if [ -n "$make_n_stderr" ]; then
+			echo "$make_n_stderr" >&2
+		else
+			echo "                  (nothing on stderr; re-run \`$MAKE_BIN -n $target\` by hand)" >&2
+		fi
+		exit 1
+	fi
+done <<<"$closure"
+
 # ------------------------------------------------------------- workflow scraping
 
 # Command lines from every `run:` step. Comment lines inside a run body are
