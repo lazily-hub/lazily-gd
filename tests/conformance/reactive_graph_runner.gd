@@ -49,6 +49,11 @@ var fail_next: Dictionary[String, int] = {}
 ## Names the scenario a failure came from; empty for a shape=steps fixture.
 var _scenario := ""
 
+## How many steps the current replay carried, so a failure raised while applying
+## `after_publish.op` is reported at a step index past the fixture's own rather
+## than at a bare -1.
+var _steps_count := 0
+
 ## Scenario ids this run actually replayed, in order.
 ##
 ## The declared-vs-replayed rung. A scenario the runner skips contributes no
@@ -56,6 +61,14 @@ var _scenario := ""
 ## fixture — indistinguishable from replaying both. The suite asserts this
 ## against the ids the fixture declares.
 var scenarios_replayed: Array[String] = []
+
+## What each scenario's world LOOKED LIKE once its steps were done, keyed by
+## scenario id, for the `observationally_equal` relation.
+##
+## Accumulates ACROSS scenarios and is deliberately not cleared by `_replay`:
+## the relation is a claim about two independent worlds, so it can only be
+## checked once both have been observed and torn down.
+var scenario_observations: Dictionary[String, Array] = {}
 
 var failures: Array[String] = []
 
@@ -84,6 +97,13 @@ func run(fixture: Dictionary) -> Array[String]:
 			+ "KNOWN_UNCOVERED in scripts/check-conformance-coverage.sh with a reason"
 		)
 		return failures
+	# The fixture-level `expected` block. `scope_teardown_equals_fold_of_disposals`
+	# carries its whole point here — `observationally_equal`, a RELATION between
+	# two op streams that no single scenario can state — plus the `final_state`
+	# and `after_publish` claims each scenario is measured against. Before
+	# #lzgdblockledger nothing in this binding read it: falsifying every value in
+	# it left `make check` green at exit 0.
+	var tail: Variant = fixture.get("expected")
 	if shape == "scenarios":
 		var scenarios: Array = fixture.get("scenarios", [])
 		if scenarios.is_empty():
@@ -99,7 +119,9 @@ func run(fixture: Dictionary) -> Array[String]:
 				failures.append("a scenario carries neither `id` nor `name`")
 				continue
 			scenarios_replayed.append(sid)
-			_replay(sc.get("steps", []), sid)
+			_replay(sc.get("steps", []), sid, tail)
+		if typeof(tail) == TYPE_DICTIONARY:
+			_check_relation(tail as Dictionary)
 		return failures
 	var steps: Array = fixture.get("steps", [])
 	if steps.is_empty():
@@ -108,13 +130,14 @@ func run(fixture: Dictionary) -> Array[String]:
 		failures.append("shape=steps but the fixture carries none — "
 			+ "replaying nothing must not report conformance")
 		return failures
-	_replay(steps, "")
+	_replay(steps, "", tail)
 	return failures
 
 
 ## One independent run: fresh context, fresh state.
-func _replay(steps: Array, scenario: String) -> void:
+func _replay(steps: Array, scenario: String, tail: Variant = null) -> void:
 	_scenario = scenario
+	_steps_count = steps.size()
 	ctx = LazilyContext.new()
 	cells = {}
 	scopes = {}
@@ -136,6 +159,11 @@ func _replay(steps: Array, scenario: String) -> void:
 		var expect: Variant = step.get("expect")
 		if expect != null:
 			_check(expect as Dictionary, op, i)
+	# BEFORE the teardown below, because `final_state` and `after_publish` are
+	# claims about this scenario's live world — evaluating them after
+	# `_root_scope.dispose()` would measure the runner's own cleanup.
+	if typeof(tail) == TYPE_DICTIONARY:
+		_check_scenario_tail(tail as Dictionary, scenario)
 	# Tear the owner down once every step and expectation is done. Nothing
 	# observable depends on it — but `churn_returns_to_baseline` builds a
 	# thousand subscribers, and each one's body captures this runner, so
@@ -151,6 +179,200 @@ func _fail(i: int, msg: String) -> void:
 		failures.append("step %d: %s" % [i, msg])
 	else:
 		failures.append("scenario %s, step %d: %s" % [_scenario, i, msg])
+
+
+## Keys the fixture-level `expected` block may carry. Anything else fails closed.
+const TAIL_KEYS: Array[String] = [
+	"note",
+	"observationally_equal",
+	"final_state",
+	"after_publish",
+]
+
+
+func _fail_tail(scenario: String, msg: String) -> void:
+	if scenario == "":
+		failures.append("fixture `expected`: %s" % msg)
+	else:
+		failures.append("scenario %s, fixture `expected`: %s" % [scenario, msg])
+
+
+## Evaluates the fixture-level `expected` block in the scenario's LIVE world and
+## records what it observed.
+##
+## `observationally_equal` is skipped here on purpose: it is a relation BETWEEN
+## scenarios, so it can only be decided once every scenario has been observed.
+## `_check_relation` does that after the loop.
+func _check_scenario_tail(tail: Dictionary, scenario: String) -> void:
+	# Rung 0: this is the one block in gd's opened set that nothing bound.
+	LazilyBlockLedger.bind(tail)
+
+	# Fail CLOSED on any key this runner does not model, BEFORE evaluating the
+	# ones it does — the same contract as `_check`'s default arm, one level up.
+	for key: String in tail:
+		if not TAIL_KEYS.has(key):
+			_fail_tail(scenario, ("unsupported fixture-level expectation '%s' — this " % key)
+				+ "runner does not assert it, and silently ignoring it would be a "
+				+ "false green")
+
+	# ORDER IS SEMANTIC, NOT ALPHABETICAL, and it is not cosmetic. `final_state`
+	# is the world as the scenario's steps left it; `after_publish` then WRITES
+	# into that same world and observes the result. Iterating the block's keys in
+	# sorted order runs `after_publish` first (`a` < `f`) and `final_state` then
+	# reads the POST-publish value — measured while writing this:
+	# `final_state.read['outside']` wanted 101 and got 105, in both scenarios.
+	var record: Array = []
+	if tail.has("final_state"):
+		record.append(["final_state", _observe(tail["final_state"], "final_state")])
+	if tail.has("after_publish"):
+		var sub: Variant = tail["after_publish"]
+		if typeof(sub) != TYPE_DICTIONARY:
+			_fail_tail(scenario, "after_publish is not an object")
+		else:
+			var pop: Variant = (sub as Dictionary).get("op")
+			if typeof(pop) != TYPE_DICTIONARY:
+				_fail_tail(scenario, "after_publish carries no `op` to publish")
+			else:
+				# Applied in THIS scenario's world. `_apply` clears `observed`
+				# first, so `after_publish.observed_by` answers "ran because of
+				# the publish" rather than accumulating the whole scenario.
+				_apply(pop as Dictionary, _steps_count)
+				record.append(["after_publish", _observe(sub, "after_publish")])
+	scenario_observations[scenario] = record
+
+
+## Checks the `read` / `readable` / `dependents_of` / `observed_by` claims in one
+## sub-block against the live world, and returns what it OBSERVED.
+##
+## The return value is the observation, never the fixture's own numbers: a
+## record built from the corpus would make `observationally_equal` compare the
+## fixture with itself and pass however the two worlds actually ended up.
+func _observe(sub_v: Variant, where: String) -> Array:
+	if typeof(sub_v) != TYPE_DICTIONARY:
+		_fail_tail(_scenario, "%s is not an object" % where)
+		return []
+	var sub := sub_v as Dictionary
+	var seen: Array = []
+	var keys: Array = sub.keys()
+	keys.sort()
+	for key: String in keys:
+		match key:
+			"note", "op":
+				continue
+			"read":
+				var want: Dictionary = sub["read"]
+				var ids: Array = want.keys()
+				ids.sort()
+				var got: Array = []
+				for cid: String in ids:
+					var c: Variant = cells.get(cid)
+					if c == null:
+						_fail_tail(_scenario, "%s.read names unknown cell '%s'" % [where, cid])
+						continue
+					var v: Variant = ctx.peek(c as LazilyCell)
+					got.append([cid, v])
+					if v != want[cid]:
+						_fail_tail(_scenario, "%s.read['%s'] %s, got %s"
+							% [where, cid, want[cid], v])
+				seen.append(["read", got])
+			"readable":
+				var want_r: Dictionary = sub["readable"]
+				var rids: Array = want_r.keys()
+				rids.sort()
+				var got_r: Array = []
+				for rid: String in rids:
+					var target: Variant = cells.get(rid)
+					if target == null and effects.has(rid):
+						target = effects[rid]
+					if target == null:
+						_fail_tail(_scenario, "%s.readable names unknown id '%s'" % [where, rid])
+						continue
+					var live := not (target as LazilyCell).is_disposed()
+					got_r.append([rid, live])
+					if live != bool(want_r[rid]):
+						_fail_tail(_scenario, "%s.readable['%s'] %s, got %s"
+							% [where, rid, want_r[rid], live])
+				seen.append(["readable", got_r])
+			"dependents_of":
+				var want_d: Dictionary = sub["dependents_of"]
+				var dids: Array = want_d.keys()
+				dids.sort()
+				var got_d: Array = []
+				for cid2: String in dids:
+					var c2: Variant = cells.get(cid2)
+					if c2 == null:
+						_fail_tail(_scenario,
+							"%s.dependents_of names unknown cell '%s'" % [where, cid2])
+						continue
+					var n := (c2 as LazilyCell).dependent_count()
+					got_d.append([cid2, n])
+					if n != int(want_d[cid2]):
+						_fail_tail(_scenario, "%s.dependents_of['%s'] %s, got %d"
+							% [where, cid2, want_d[cid2], n])
+				seen.append(["dependents_of", got_d])
+			"observed_by":
+				var want_o: Array = sub["observed_by"]
+				var got_o := observed.duplicate()
+				got_o.sort()
+				var want_sorted := Array(want_o).duplicate()
+				want_sorted.sort()
+				got_o.sort()
+				seen.append(["observed_by", got_o])
+				if got_o != want_sorted:
+					_fail_tail(_scenario, "%s.observed_by %s, got %s"
+						% [where, want_sorted, got_o])
+			_:
+				_fail_tail(_scenario, ("unsupported %s expectation '%s' — this runner " % [where, key])
+					+ "does not assert it, and silently ignoring it would be a false green")
+	return seen
+
+
+## `observationally_equal`: the claim the fixture exists for.
+##
+## Ending a scope must be observationally equal to disposing each of its members
+## individually. That is not expressible inside one `steps` array, which is why
+## the `scenarios` shape exists — and checking each scenario against
+## `final_state` alone leaves the RELATION unverified, because two worlds can
+## each satisfy the same expectations for different reasons only if the
+## expectations are weaker than the relation. So the two observation records are
+## compared directly.
+func _check_relation(tail: Dictionary) -> void:
+	var named: Variant = tail.get("observationally_equal")
+	if named == null:
+		return
+	if typeof(named) != TYPE_ARRAY:
+		failures.append("observationally_equal is not an array of scenario ids")
+		return
+	var ids := named as Array
+	if ids.size() < 2:
+		failures.append("observationally_equal names %d scenario(s); a relation needs two"
+			% ids.size())
+		return
+	var first := String(ids[0])
+	if not scenario_observations.has(first):
+		failures.append("observationally_equal names '%s', which this run did not replay"
+			% first)
+		return
+	var base: Array = scenario_observations[first]
+	# The vacuity guard for this rung (#lzvacuousrun). Two EMPTY records compare
+	# equal, so a tail that declares the relation and nothing to observe would
+	# report the fixture's whole point verified having compared nothing.
+	if base.is_empty():
+		failures.append("observationally_equal compared an EMPTY observation record — the "
+			+ "fixture's `expected` declares no final_state or after_publish to observe, "
+			+ "so equality here would prove nothing")
+		return
+	for n in range(1, ids.size()):
+		var other := String(ids[n])
+		if not scenario_observations.has(other):
+			failures.append("observationally_equal names '%s', which this run did not replay"
+				% other)
+			continue
+		var got: Array = scenario_observations[other]
+		if got != base:
+			failures.append(("scenarios '%s' and '%s' are NOT observationally equal:\n" % [first, other])
+				+ "      %s: %s\n" % [first, base]
+				+ "      %s: %s" % [other, got])
 
 
 func _apply(op: Dictionary, i: int) -> void:
@@ -545,6 +767,11 @@ func _effect_runs(id: String) -> int:
 
 
 func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
+	# Rung 0 (#lzgdblockledger). Book the block as BOUND before asserting any of
+	# its keys: what the ledger answers is whether anything READ this block at
+	# all, which is a different question from whether its keys held. A failing
+	# assertion is still a bound block — the failure travels on its own channel.
+	LazilyBlockLedger.bind(expect)
 	for key: String in expect:
 		match key:
 			"note":

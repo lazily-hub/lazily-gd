@@ -53,6 +53,12 @@ func _replay_scenario(model: RefCounted, core_mode: bool, scenario: Dictionary) 
 	var steps: Array = scenario.get("steps", [])
 	assert_int(steps.size()).is_greater(0)
 	for step: Dictionary in steps:
+		# Rung 0 (#lzgdblockledger). This suite is the SECOND, independent
+		# consumer of the corpus: it binds the 22 `expected` blocks this fixture
+		# carries, which `reactive_graph_runner` never sees. Booking the block
+		# here is what keeps the ledger's answer about the corpus rather than
+		# about one runner.
+		LazilyBlockLedger.bind(step["expected"])
 		var outcome := _invoke(model, core_mode, step["op"])
 		assert_dict(outcome).override_failure_message(
 			"%s outcome mismatch for %s" % [scenario["id"], step["op"]]

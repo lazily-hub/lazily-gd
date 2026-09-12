@@ -26,11 +26,11 @@ static func spec_dir() -> String:
 	return ProjectSettings.globalize_path("res://").path_join(DEFAULT_SPEC_DIR)
 
 
+## Delegated to `LazilyBlockLedger`, which owns the evidence channel now that the
+## manifest carries block records as well as fixture ids. One resolver, so the
+## fixture ledger and the block ledger cannot end up writing to two files.
 static func manifest_path() -> String:
-	var p := OS.get_environment("LAZILY_CONFORMANCE_MANIFEST")
-	if p != "":
-		return p
-	return ProjectSettings.globalize_path("res://build/conformance-fixtures-loaded.txt")
+	return LazilyBlockLedger.manifest_path()
 
 
 static func corpus_available() -> bool:
@@ -56,22 +56,15 @@ static func load_fixture(fixture_id: String) -> Dictionary:
 		push_error("lazily: canonical fixture is not a JSON object: %s" % full)
 		return {}
 	_record(fixture_id)
+	# Rung 0 (#lzgdblockledger). Inventoried HERE, at the moment the fixture is
+	# read, so the ledger lists what the corpus CARRIES rather than what a runner
+	# happened to look at. An inventory built at assert time could only ever list
+	# blocks a runner already found.
+	LazilyBlockLedger.declare(fixture_id, parsed)
 	return parsed as Dictionary
 
 
-## Append-only, one id per line, flushed per entry.
-##
-## Appending rather than rewriting matters: gdUnit4 may run suites in separate
-## passes, and a rewrite would leave the manifest describing only the last one.
+## A bare id line, one per opened fixture. Append-only; see
+## `LazilyBlockLedger.append_line`.
 static func _record(fixture_id: String) -> void:
-	var path := manifest_path()
-	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
-	var f := FileAccess.open(path, FileAccess.READ_WRITE)
-	if f == null:
-		f = FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		push_error("lazily: cannot open conformance manifest for append: %s" % path)
-		return
-	f.seek_end()
-	f.store_line(fixture_id)
-	f.close()
+	LazilyBlockLedger.append_line(fixture_id)

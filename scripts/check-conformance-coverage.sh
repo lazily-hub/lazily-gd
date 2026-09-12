@@ -265,7 +265,18 @@ if [ ! -s "$MANIFEST" ]; then
   echo "      manifest is missing evidence, not evidence of absence." >&2
   exit 1
 fi
-OPENED="$(sort -u "$MANIFEST")"
+# The manifest carries TWO kinds of record since the assertion-block rung landed
+# (#lzgdblockledger): a bare `corpus/fixture.json` line means the file was
+# OPENED, and a TAB-separated `blocks-declared` / `blocks-bound` line belongs to
+# the block ledger at the bottom of this file. The fixture rungs here read only
+# the bare lines — without this filter every block record reads as a fixture id
+# that names no file, and the evidence-channel check below reports 127 corrupt
+# entries for a manifest that is perfectly intact.
+#
+# `|| true` because `grep -v` exits 1 when it selects nothing, and under
+# `pipefail` that would abort here rather than at the `covered -eq 0` guard
+# below, which is the check that actually knows what an empty opened set means.
+OPENED="$(grep -v -e $'\t' "$MANIFEST" | sort -u || true)"
 
 missing=0
 total=0
@@ -346,3 +357,418 @@ fi
 
 echo "conformance coverage OK: $covered/$total canonical fixture(s) replayed;" \
      "$excused_named named excuse(s), $excused_family in unimplemented families"
+
+# ── rung 0: the assertion-block BIND ledger (#lzgdblockledger, #lznullformblind)
+#
+# The rung UNDER everything above. Each rung so far reasons about fixtures the
+# run OPENED and scenarios it REACHED; this one reasons about the assertion
+# BLOCKS those fixtures carry. It is the floor because every other rung is
+# scoped to a block a runner already bound — `_check`'s fail-closed default
+# reports an unmodelled KEY, but only inside a block something reads. A block no
+# runner binds reports NOTHING AT ALL, because nothing reads its keys.
+#
+# That was not a theoretical gap here. Before this rung existed, falsifying
+# every value in `scope_teardown_equals_fold_of_disposals.json`'s top-level
+# `expected` — `observationally_equal` naming scenarios that do not exist,
+# `dependents_of.topic` 999, `read.outside` -1, `observed_by` ["bogus"] — left
+# `make check` GREEN at exit 0, 31 test cases executed, 22/156 fixtures
+# replayed. Deleting the block outright was also green. That block is the claim
+# the fixture exists for, and nothing in this binding read it.
+#
+# Blocks are matched by CONTENT digest, never by name: a runner cannot satisfy
+# this by recognising the word `expect`, only by binding the bytes the loader
+# inventoried.
+
+# Blocks an OPENED fixture carries that no runner binds, as
+# `fixture|where|reason`. Each entry is a claim that someone looked and that the
+# block cannot be bound here yet — so it stays VISIBLE on every run instead of
+# invisible, which is the state this whole rung replaced.
+#
+# EMPTY, and that is the point: all 136 sites in the opened set are bound. The
+# one that was not — `.expected` in
+# `reactive-graph/scope_teardown_equals_fold_of_disposals.json` — is now bound by
+# `LazilyReactiveGraphRunner._check_scenario_tail` / `_check_relation`, which
+# assert `final_state`, `after_publish`, and the `observationally_equal` relation
+# between the two scenarios.
+#
+# Kept in the MULTI-LINE form even while empty, for the same reason
+# KNOWN_UNCOVERED above is: lazily-spec's check-corpus-floors.mjs reads a bash
+# array by scanning from `NAME=(` to the next line beginning with `)`, and the
+# one-line `NAME=()` spelling has no terminator to find, so the read runs on
+# into whatever array closes next.
+KNOWN_UNBOUND_BLOCKS=(
+)
+
+BLOCK_GUARD_PY="$(cat <<'PY'
+import json
+import os
+import struct
+import sys
+
+manifest_path, spec_dir = sys.argv[1], sys.argv[2]
+
+# ---- the excuse ledger, with its three staleness checks --------------------
+excuses = {}
+for raw in sys.argv[3:]:
+    raw = raw.strip()
+    if not raw:
+        continue
+    parts = raw.split("|", 2)
+    if len(parts) != 3 or not parts[2].strip():
+        sys.stderr.write(
+            "ERROR: malformed KNOWN_UNBOUND_BLOCKS entry %r — expected\n"
+            "       fixture|where|reason, with a NON-EMPTY reason. An excuse nobody had\n"
+            "       to justify is an allowlist entry wearing a different hat.\n" % raw
+        )
+        sys.exit(1)
+    excuses["%s|%s" % (parts[0], parts[1])] = parts[2].strip()
+
+# ---- the digest rule, the python TWIN of tests/conformance/block_ledger.gd --
+#
+# Rule for rule. lazily-cs keys its digest on the raw lexical form of each
+# number (`JsonElement.GetRawText()`); that rule CANNOT be mirrored in GDScript,
+# because Godot's JSON parser exposes no per-node source text and reports every
+# number as a float. So numbers are folded by their IEEE-754 binary64 BITS,
+# which both sides can produce exactly and which depends on neither side's float
+# formatter. `"integer when whole, else %.17e"` was measured and rejected first:
+# GDScript's `%` operator does not implement `%e` at all and returns the literal
+# string `"%.17e"`, which would have folded every non-whole number in the corpus
+# onto one digest.
+BLOCK_NAMES = ("assertions", "expect", "expect_after", "expect_initial", "expected")
+FNV_PRIME = 0x01000193
+LANE0_BASIS = 0x811C9DC5
+LANE1_BASIS = 0x811C9DC5 ^ 0x5BF03635
+U32 = 0xFFFFFFFF
+# Smallest POSITIVE NORMAL binary64. Godot's JSON parser flushes anything below
+# this to zero where python keeps the subnormal, so such a value is refused with
+# a named error rather than hashed into a silent disagreement.
+SMALLEST_NORMAL = 2.2250738585072014e-308
+
+
+def feed(out, value, where):
+    if isinstance(value, dict):
+        out.append(b"{")
+        for key in sorted(value):
+            out.append(str(key).encode("utf-8"))
+            out.append(b"=")
+            feed(out, value[key], where)
+        out.append(b"}")
+    elif isinstance(value, list):
+        out.append(b"[")
+        for item in value:
+            feed(out, item, where)
+        out.append(b"]")
+    elif isinstance(value, bool):
+        out.append(b"b1" if value else b"b0")
+    elif isinstance(value, str):
+        out.append(b"s")
+        out.append(value.encode("utf-8"))
+    elif isinstance(value, (int, float)):
+        f = float(value)
+        if f != f or f in (float("inf"), float("-inf")):
+            sys.stderr.write(
+                "ERROR: %s carries the non-finite number %r. JSON cannot spell one, so\n"
+                "       the corpus has been generated by something that can — and the two\n"
+                "       digest sides would not agree on it.\n" % (where, value)
+            )
+            sys.exit(1)
+        if f == 0.0:
+            # `-0.0` and `0` are ONE claim; python's json reads `-0` as the int 0
+            # (sign gone) while Godot reads it as -0.0 (sign kept).
+            f = 0.0
+        elif abs(f) < SMALLEST_NORMAL:
+            sys.stderr.write(
+                "ERROR: %s carries %r, a SUBNORMAL double.\n"
+                "       Godot's JSON parser flushes magnitudes below %r to zero while\n"
+                "       python keeps them, so the GDScript digest and this twin would\n"
+                "       disagree about this block SILENTLY — every site in the corpus\n"
+                "       would read as unbound with no hint why. Failing here instead.\n"
+                "       Pin a shared rule for subnormals in block_ledger.gd and in this\n"
+                "       file, in the same change, before the corpus carries one.\n"
+                % (where, value, SMALLEST_NORMAL)
+            )
+            sys.exit(1)
+        out.append(b"n")
+        out.append(struct.pack("<d", f))
+    else:
+        out.append(b"z")
+
+
+def fnv(stream, basis):
+    h = basis
+    for byte in stream:
+        h = (h ^ byte) & U32
+        h = (h * FNV_PRIME) & U32
+    return h
+
+
+def digest(block, where):
+    parts = []
+    feed(parts, block, where)
+    stream = b"".join(parts)
+    return "%08x%08x" % (fnv(stream, LANE0_BASIS), fnv(stream, LANE1_BASIS))
+
+
+def walk(fixture_id, node, path, out):
+    """The python twin of `LazilyBlockLedger._walk`.
+
+    Object-valued block -> one site under its own name. Array-valued block ->
+    one site per plain-object element, bucketed `name[]`. Descends INTO a block
+    as well as past it, mirroring lazily-spec's maximal rule; no block in the
+    corpus nests another today, so this changes no count.
+    """
+    if isinstance(node, list):
+        for index, item in enumerate(node):
+            walk(fixture_id, item, "%s[%d]" % (path, index), out)
+        return
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        where = path + "." + key
+        if key in BLOCK_NAMES:
+            site = "%s|%s" % (fixture_id, where)
+            if isinstance(value, dict):
+                out[site] = digest(value, site)
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, dict):
+                        nested = "%s|%s[%d]" % (fixture_id, where, index)
+                        out[nested] = digest(item, nested)
+        walk(fixture_id, value, where, out)
+
+
+# ---- what the RUN inventoried and bound ------------------------------------
+try:
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest_lines = fh.read().splitlines()
+except (OSError, UnicodeDecodeError) as exc:
+    sys.stderr.write(
+        "ERROR: cannot read the conformance manifest %s (%s).\n"
+        "       Evidence that cannot be decoded is not evidence of absence. Re-run the\n"
+        "       suite with LAZILY_CONFORMANCE_MANIFEST set to an ABSOLUTE path,\n"
+        "       truncated first, which is what `make test` does. Do not hand-edit it:\n"
+        "       it is the run's own evidence.\n" % (manifest_path, exc)
+    )
+    sys.exit(1)
+
+declared = {}
+bound = set()
+for line in manifest_lines:
+    fields = line.split("\t")
+    if fields[0] == "blocks-declared" and len(fields) == 4:
+        declared[fields[3]] = fields[2]
+    elif fields[0] == "blocks-bound" and len(fields) == 2:
+        bound.add(fields[1])
+
+# ---- the DERIVED expectation ----------------------------------------------
+#
+# Derived, never typed (#lzblockfloorpin). A hand-typed MIN_BLOCKS is wrong for
+# the whole interval between the corpus moving and somebody noticing, and a `>=`
+# comparison makes that interval invisible because corpus GROWTH never trips it.
+#
+# It comes from three things this repo can be held to and the RUN cannot
+# influence: the canonical corpus listing under $SPEC_DIR, and this binding's own
+# two committed ledgers — `IMPLEMENTED_FAMILY_PREFIXES` and `KNOWN_UNCOVERED`,
+# the same pair the fixture rung above is checked against. Their intersection is
+# exactly the set the suite opens (22 fixtures), which is what makes a staged
+# binding's block magnitude well defined rather than a number the next port
+# commit invalidates: implementing a family moves this in the SAME commit that
+# adds the prefix.
+#
+# LIMITATION, stated rather than papered over: both this expectation and the
+# run's inventory read the SAME corpus, so deleting a block from the real corpus
+# moves them together and this equality cannot see it. What it does catch is the
+# two WALKS disagreeing — a loader that stops descending, drops a block name,
+# misses array elements, or detaches entirely. The corpus-against-its-own-history
+# half of the job belongs to lazily-spec's `corpus-counts.json`.
+prefixes = [p for p in os.environ.get("FAMILY_PREFIX_LEDGER", "").splitlines() if p.strip()]
+uncovered = {u.strip() for u in os.environ.get("KNOWN_UNCOVERED_LEDGER", "").splitlines() if u.strip()}
+if not prefixes:
+    sys.stderr.write(
+        "ERROR: IMPLEMENTED_FAMILY_PREFIXES reached this guard EMPTY, so the derived\n"
+        "       expectation would be zero blocks over zero fixtures and every check\n"
+        "       below would pass having compared nothing (#lzvacuousrun).\n"
+    )
+    sys.exit(1)
+
+corpus = []
+for root, _dirs, names in os.walk(spec_dir):
+    for name in names:
+        if name.endswith(".json"):
+            rel = os.path.relpath(os.path.join(root, name), spec_dir).replace(os.sep, "/")
+            corpus.append(rel)
+corpus.sort()
+
+opened = [
+    f for f in corpus
+    if any(f.startswith(p) for p in prefixes) and f not in uncovered
+]
+
+expected = {}
+for fixture_id in opened:
+    with open(os.path.join(spec_dir, fixture_id), encoding="utf-8") as fh:
+        walk(fixture_id, json.load(fh), "", expected)
+
+expected_digests = set(expected.values())
+declared_digests = set(declared.values())
+
+# ---- 1. every inventoried block must be BOUND by some runner ---------------
+unbound = sorted(
+    site for site, dig in declared.items() if dig not in bound and site not in excuses
+)
+if unbound:
+    sys.stderr.write(
+        "ERROR: %d assertion block(s) were carried by an OPENED fixture and bound by no\n"
+        "       runner. Every other rung is scoped to blocks a runner bound, so these\n"
+        "       report nothing at all rather than reporting a gap:\n" % len(unbound)
+    )
+    for site in unbound:
+        sys.stderr.write("         %s\n" % site)
+    sys.stderr.write(
+        "       Bind each with LazilyBlockLedger.bind() and assert its keys, or add it\n"
+        "       to KNOWN_UNBOUND_BLOCKS with a reason so the gap is visible on every\n"
+        "       run instead of invisible.\n"
+    )
+    sys.exit(1)
+
+# ---- 2. an excuse for a block a runner DID bind is a lie ------------------
+stale = sorted(site for site in excuses if site in declared and declared[site] in bound)
+if stale:
+    sys.stderr.write(
+        "ERROR: %d KNOWN_UNBOUND_BLOCKS entr(ies) name a block this run DID bind. The\n"
+        "       excuse hides nothing and its reason is now false:\n" % len(stale)
+    )
+    for site in stale:
+        sys.stderr.write('         %s — "%s"\n' % (site, excuses[site]))
+    sys.stderr.write("       Delete each one.\n")
+    sys.exit(1)
+
+# ---- 3. an excuse for a block the opened corpus no longer carries ---------
+unknown = sorted(site for site in excuses if site not in declared)
+if unknown:
+    sys.stderr.write(
+        "ERROR: %d KNOWN_UNBOUND_BLOCKS entr(ies) name a block no OPENED fixture\n"
+        "       declares — the fixture, the path, or the block is gone:\n" % len(unknown)
+    )
+    for site in unknown:
+        sys.stderr.write('         %s — "%s"\n' % (site, excuses[site]))
+    sys.stderr.write(
+        "       Delete each one, or fix its `fixture|where` to a path the walk prints.\n"
+    )
+    sys.exit(1)
+
+# ---- 4. the zero-guard on each dimension ----------------------------------
+#
+# The whole reason this rung needs a magnitude. Without it, zero declared blocks
+# means zero unbound blocks, and every check above reports OK having compared
+# nothing (#lzvacuousrun). Each dimension gets its own guard because each can
+# reach zero for its own reason.
+for label, size, source in (
+    ("derived site", len(expected), "the corpus walk"),
+    ("derived distinct-digest", len(expected_digests), "the corpus walk"),
+    ("inventoried site", len(declared), "the run's manifest"),
+    ("inventoried distinct-digest", len(declared_digests), "the run's manifest"),
+):
+    if size == 0:
+        sys.stderr.write(
+            "ERROR: the %s count is ZERO, from %s.\n"
+            "       That is missing EVIDENCE, not evidence of absence: a guard that\n"
+            "       inventoried nothing must not report OK (#lzvacuousrun).\n"
+            % (label, source)
+        )
+        sys.exit(1)
+
+# ---- 5a. SITES, asserted EQUAL --------------------------------------------
+if len(declared) != len(expected):
+    direction = "FEWER than" if len(declared) < len(expected) else "MORE than"
+    sys.stderr.write(
+        "ERROR: the run inventoried %d assertion-block SITES; the canonical corpus at\n"
+        "       %s, narrowed by IMPLEMENTED_FAMILY_PREFIXES and KNOWN_UNCOVERED,\n"
+        "       derives %d over %d opened fixtures. The run has %s the corpus carries.\n"
+        "       The DIGEST count below can agree while this does not: deleting a block\n"
+        "       whose bytes recur elsewhere leaves the digest set whole and takes one\n"
+        "       site away, so a digest count absorbs the deletion entirely.\n"
+        "       Either the corpus moved under this checkout, or LazilyBlockLedger._walk\n"
+        "       and its twin in this script stopped agreeing — fix whichever moved.\n"
+        % (len(declared), spec_dir, len(expected), len(opened), direction)
+    )
+    sys.exit(1)
+
+# ---- 5b. DISTINCT DIGESTS, asserted EQUAL ---------------------------------
+if len(declared_digests) != len(expected_digests):
+    direction = "FEWER than" if len(declared_digests) < len(expected_digests) else "MORE than"
+    sys.stderr.write(
+        "ERROR: the run inventoried %d DISTINCT assertion-block digests; the corpus\n"
+        "       derives %d over %d opened fixtures. The run has %s the corpus carries.\n"
+        "       The SITE count above can agree while this does not: two sites spelled\n"
+        "       identically share one digest, so rewriting one block into another's\n"
+        "       spelling collapses two distinct claims into one and leaves the site\n"
+        "       count untouched.\n"
+        "       Either the corpus moved under this checkout, or LazilyBlockLedger.digest\n"
+        "       and its twin in this script stopped agreeing — fix whichever moved.\n"
+        % (len(declared_digests), len(expected_digests), len(opened), direction)
+    )
+    sys.exit(1)
+
+# ---- 5c. SET IDENTITY: WHICH digests, not how many ------------------------
+#
+# The check both counts are blind to. A twin that hashed differently but
+# consistently would produce 136 sites and 127 distinct digests on both sides and
+# satisfy 5a and 5b exactly, while not one digest matched — and the bind check
+# above would then have nothing real to compare. Two sites swapping digests is
+# the same class of miss. So compare the site -> digest MAPS.
+if declared != expected:
+    only_run = sorted(set(declared) - set(expected))
+    only_corpus = sorted(set(expected) - set(declared))
+    mismatched = sorted(s for s in set(declared) & set(expected) if declared[s] != expected[s])
+    sys.stderr.write(
+        "ERROR: the run's site -> digest map is not the corpus walk's, even though the\n"
+        "       counts agree. The two walks or the two digest rules have diverged, and\n"
+        "       a cardinality check cannot see it.\n"
+    )
+    for site in only_run[:10]:
+        sys.stderr.write("         inventoried, not derived: %s\n" % site)
+    for site in only_corpus[:10]:
+        sys.stderr.write("         derived, not inventoried: %s\n" % site)
+    for site in mismatched[:10]:
+        sys.stderr.write(
+            "         digest differs: %s (run %s, corpus %s)\n"
+            % (site, declared[site], expected[site])
+        )
+    sys.stderr.write(
+        "       LazilyBlockLedger.digest and the `digest` twin in this script must fold\n"
+        "       numbers, strings, key order and type tags identically.\n"
+    )
+    sys.exit(1)
+
+print(
+    "assertion-block bind OK: %d/%d inventoried site(s) BOUND to a runner "
+    "(%d declared unbindable; derived %d sites AND %d distinct digests from %d opened "
+    "fixtures, both asserted EQUAL, and the site -> digest maps are identical; "
+    "content-keyed, so a runner's block NAME cannot satisfy it)"
+    % (
+        len(declared) - len(excuses),
+        len(declared),
+        len(excuses),
+        len(expected),
+        len(expected_digests),
+        len(opened),
+    )
+)
+PY
+)"
+
+command -v python3 >/dev/null 2>&1 || {
+  echo "FAIL: python3 is required to inventory the corpus's assertion blocks." >&2
+  echo "      Without it rung 0 cannot be verified, and passing in that state is" >&2
+  echo "      missing evidence, not evidence of absence." >&2
+  exit 1
+}
+
+# The two ledgers arrive as newline-joined scalars rather than as argv, so the
+# excuse argv keeps its shape and this script adds no further top-level bash
+# array for lazily-spec's check-corpus-floors.mjs to classify.
+FAMILY_PREFIX_LEDGER="$(printf '%s\n' ${IMPLEMENTED_FAMILY_PREFIXES[@]+"${IMPLEMENTED_FAMILY_PREFIXES[@]}"})" \
+KNOWN_UNCOVERED_LEDGER="$(printf '%s\n' ${KNOWN_UNCOVERED[@]+"${KNOWN_UNCOVERED[@]}"})" \
+python3 -c "$BLOCK_GUARD_PY" "$MANIFEST" "$SPEC_DIR" \
+  ${KNOWN_UNBOUND_BLOCKS[@]+"${KNOWN_UNBOUND_BLOCKS[@]}"}
