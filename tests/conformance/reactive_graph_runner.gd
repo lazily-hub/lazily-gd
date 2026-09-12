@@ -181,6 +181,41 @@ func _fail(i: int, msg: String) -> void:
 		failures.append("scenario %s, step %d: %s" % [_scenario, i, msg])
 
 
+## The refusal a non-boolean flag earns, or `""` when the value IS a JSON boolean.
+##
+## A flag claim is compared against a native `bool`, so the TYPE has to be
+## required rather than coerced (#lzflagcoercion). lazily-go shipped
+## `got != (want == true)`, which is false for every non-boolean and therefore
+## reads a fixture spelling `"true"` as the claim `false` — a silently INVERTED
+## assertion that passes. GDScript's two halves of the same hole were measured on
+## Godot 4.7.2 before this gate was written, because only one of them is loud:
+##
+##   - a JSON NUMBER coerces SILENTLY. `bool(1.0)` is `true`, `bool(0.0)` is
+##     `false`, and `var b: bool = 1.0` assigns without complaint. So
+##     `"readable": {"mid": 0}` was read as the claim `false` and was GREEN at
+##     exit 0 — a number answering a boolean question, which is the corpus
+##     spelling a claim this runner does not actually assert.
+##   - a STRING, `null`, `{}` or `[]` raises instead: `bool("true")` is
+##     `Invalid call. Nonexistent 'bool' constructor`, and `var b: bool = "true"`
+##     is an assignment-type error. That error ABORTS the enclosing key loop, so
+##     every SIBLING key in the same block goes unasserted and this runner's own
+##     `failures` list stays EMPTY. The planted run reddened only because
+##     gdUnit4's `GodotGdErrorMonitor` happened to be armed — it reported
+##     `4 errors | 0 failures`, the conformance channel silent about all four. A
+##     contract that depends on the harness noticing a crash is not a contract,
+##     and the crash takes the block's other assertions down with it.
+##
+## So neither half is accepted. `"true"` is not `true`, and `1` is not `true`.
+static func _flag_refusal(v: Variant, where: String) -> String:
+	if typeof(v) == TYPE_BOOL:
+		return ""
+	return ("%s must be a JSON boolean; the fixture spells %s (%s). " % [
+			where, var_to_str(v), type_string(typeof(v)),
+		]
+		+ "Coercing it here would answer a boolean question with a value that is "
+		+ "not one — `\"true\"` is not `true` and `1` is not `true`")
+
+
 ## Keys the fixture-level `expected` block may carry. Anything else fails closed.
 const TAIL_KEYS: Array[String] = [
 	"note",
@@ -289,6 +324,12 @@ func _observe(sub_v: Variant, where: String) -> Array:
 						continue
 					var live := not (target as LazilyCell).is_disposed()
 					got_r.append([rid, live])
+					var refusal := _flag_refusal(
+						want_r[rid], "%s.readable['%s']" % [where, rid]
+					)
+					if refusal != "":
+						_fail_tail(_scenario, refusal)
+						continue
 					if live != bool(want_r[rid]):
 						_fail_tail(_scenario, "%s.readable['%s'] %s, got %s"
 							% [where, rid, want_r[rid], live])
@@ -409,10 +450,19 @@ func _apply(op: Dictionary, i: int) -> void:
 			merges[op["id"]] = int(merges.get(op["id"], 0)) + 1
 			(mtgt as LazilySource).merge(op.get("value"))
 		"computed":
+			# Same dropped presence as `_make_effect`, one rung quieter: `scopes[sc]`
+			# on an id the run never began yields nil and `.own()` on it raises, which
+			# leaves this runner's own `failures` list EMPTY and the node unowned. Only
+			# gdUnit4's error monitor would have spoken (#lzflagcoercion).
+			var sc: String = op.get("scope", "")
+			if sc != "" and not scopes.has(sc):
+				_fail(i, "computed '%s' names unknown scope '%s'" % [op["id"], sc])
+				return
+			if not _require_cells(op.get("reads", []), i, "computed '%s'.reads" % op["id"]):
+				return
 			var c := ctx.computed(_derivation(op))
 			cells[op["id"]] = c
 			_remember_handle(op["id"], c)
-			var sc: String = op.get("scope", "")
 			if sc != "":
 				scopes[sc].own(c)
 				_record_teardown_of(scopes[sc], op["id"], c)
@@ -421,10 +471,15 @@ func _apply(op: Dictionary, i: int) -> void:
 			# eagerness into invalidation instead recomputes once per WRITE rather
 			# than once per batch — the `#lzsignaleager` defect that every
 			# values-only fixture passes.
+			var ssc: String = op.get("scope", "")
+			if ssc != "" and not scopes.has(ssc):
+				_fail(i, "signal '%s' names unknown scope '%s'" % [op["id"], ssc])
+				return
+			if not _require_cells(op.get("reads", []), i, "signal '%s'.reads" % op["id"]):
+				return
 			var sig := ctx.computed(_derivation(op)).eager()
 			cells[op["id"]] = sig
 			_remember_handle(op["id"], sig)
-			var ssc: String = op.get("scope", "")
 			if ssc != "":
 				scopes[ssc].own(sig)
 		"fail_next":
@@ -522,6 +577,24 @@ func _apply(op: Dictionary, i: int) -> void:
 			_fail(i, "unsupported op '%s' — this runner replays only the Phase 1 vocabulary" % t)
 
 
+## Every cell id an op names must already exist (#lzflagcoercion).
+##
+## `_fanout` has always pre-validated its `reads` this way; `computed`, `signal`
+## and `effect` did not, and reached `cells[r]` inside the compute body instead.
+## A missing key there yields nil and the read on it raises, which leaves this
+## runner's own `failures` list EMPTY while the body computes a partial total —
+## so the only thing that reports is whatever downstream value assertion happens
+## to disagree, in a different step, naming a different cell. `writes_own_cone`
+## is worse: it is dereferenced only on a RE-run, so an id the run does not carry
+## is not touched at all until the feedback step.
+func _require_cells(ids: Array, i: int, what: String) -> bool:
+	for id: Variant in ids:
+		if not cells.has(str(id)):
+			_fail(i, "%s names unknown cell '%s'" % [what, id])
+			return false
+	return true
+
+
 ## Bind `id` to the handle it is FIRST created with, and never rebind it.
 ##
 ## `cells`/`effects` follow the fixture's current meaning of an id; churn
@@ -561,8 +634,20 @@ func _subscriber(id: String, reads: Array, owner: LazilyScope) -> LazilyEffect:
 ## exactly; it CANNOT express `read_each: false`, which describes a subscriber
 ## that is wired but never pulled. Doing the same thing for both values would
 ## replay a fixture other than the one on disk, so the false case fails closed.
+##
+## `read_each` is FIXTURE data, so its type is required here too
+## (#lzflagcoercion). A `Dictionary.get(key, default)` whose result is then
+## coerced is lazily-go's inversion shape exactly: the default `false` makes a
+## MISSING key fail closed below, but a present non-boolean used to be read for
+## its truthiness — `"read_each": 1` coerced to `true` and the fanout replayed as
+## though the corpus had declared a boolean. Measured green at exit 0 before this.
 func _requires_read_each(op: Dictionary, i: int, what: String) -> bool:
-	if bool(op.get("read_each", false)):
+	var raw: Variant = op.get("read_each", false)
+	var refusal := _flag_refusal(raw, "%s.read_each" % what)
+	if refusal != "":
+		_fail(i, refusal)
+		return false
+	if raw:
 		return true
 	_fail(i, ("%s with read_each=false is not modelled — a subscriber here is an " % what)
 		+ "Effect, which reads at creation; there is no wired-but-unpulled form")
@@ -698,7 +783,19 @@ func _derivation(op: Dictionary) -> Callable:
 ## than defaulted: folding under the wrong algebra satisfies every COUNT
 ## assertion while landing on the wrong value, which is the one failure a
 ## counting-only runner cannot see.
+##
+## A MISSING name is refused for the same reason (#lzflagcoercion). The argument
+## above does not become weaker when the corpus says nothing at all — a
+## `get("policy", "Sum")` default supplies the operand the comparison below then
+## satisfies, so an op that declared no algebra folded under Sum in silence.
+## Every `merge_cell` in the corpus spells its policy, so absence is drift.
 func _policy_of(op: Dictionary, i: int) -> LazilyMergePolicy:
+	if not op.has("policy"):
+		_fail(i, "merge_cell '%s' declares no `policy` — this runner will not "
+			% str(op.get("id", ""))
+			+ "pick an algebra for the corpus; folding under the wrong one satisfies "
+			+ "every count assertion while landing on the wrong value")
+		return LazilyMergePolicy.sum()
 	var name: String = op.get("policy", "Sum")
 	if name == "Sum":
 		return LazilyMergePolicy.sum()
@@ -708,13 +805,35 @@ func _policy_of(op: Dictionary, i: int) -> LazilyMergePolicy:
 	return LazilyMergePolicy.sum()
 
 
-func _make_effect(op: Dictionary, _i: int) -> void:
+func _make_effect(op: Dictionary, i: int) -> void:
 	var id: String = op["id"]
 	var reads: Array = op.get("reads", [])
 	var writes_own_cone: String = op.get("writes_own_cone", "")
 	var merges_into: String = op.get("merges_into", "")
 	var sc: String = op.get("scope", "")
-	var owner: LazilyScope = scopes[sc] if sc != "" and scopes.has(sc) else _root_scope
+	# The presence signal is NOT dropped (#lzflagcoercion). `scopes.has(sc)` used
+	# to be computed and its negative answered by substituting `_root_scope`, so an
+	# effect naming a scope the run never began was silently owned by the runner's
+	# own owner instead. Ownership is what `end_scope`, `scope_owned_count` and
+	# `cleanup_order` are claims ABOUT, so substituting a different owner replays a
+	# fixture other than the one on disk — measured green at exit 0 by renaming
+	# `disarm_disposes_nothing.json`'s `watch` scope from `g` to `gg`.
+	var owner: LazilyScope = _root_scope
+	if sc != "":
+		if not scopes.has(sc):
+			_fail(i, "effect '%s' names unknown scope '%s' — a scope is the sole "
+				% [id, sc]
+				+ "strong owner here, so falling back to another one would replay a "
+				+ "different ownership graph than the fixture declares")
+			return
+		owner = scopes[sc]
+	var named: Array = reads.duplicate()
+	if merges_into != "":
+		named.append(merges_into)
+	if writes_own_cone != "":
+		named.append(writes_own_cone)
+	if not _require_cells(named, i, "effect '%s'" % id):
+		return
 
 	# `writes_own_cone` describes an effect that feeds back when it REACTS. The
 	# establishing run is not a reaction, and treating it as one would diverge at
@@ -808,6 +927,12 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 						_fail(i, "expect.readable names unknown id '%s'" % rid)
 						continue
 					var is_readable := not (target as LazilyCell).is_disposed()
+					var readable_refusal := _flag_refusal(
+						want_map[rid], "expect.readable['%s']" % rid
+					)
+					if readable_refusal != "":
+						_fail(i, readable_refusal)
+						continue
 					if is_readable != bool(want_map[rid]):
 						_fail(i, "expect.readable['%s'] %s, got %s"
 							% [rid, want_map[rid], is_readable])
@@ -839,6 +964,11 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 				var wanted3: Dictionary = expect["dependencies_of"]
 				for cid3: String in wanted3:
 					var got4 := _dependency_count(cid3)
+					if got4 < 0:
+						_fail(i, "expect.dependencies_of names unknown node '%s' — "
+							% cid3
+							+ "an absent node is not a measurement of zero dependencies")
+						continue
 					if got4 != int(wanted3[cid3]):
 						_fail(i, "expect.dependencies_of['%s'] %s, got %d"
 							% [cid3, wanted3[cid3], got4])
@@ -910,6 +1040,12 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 						_fail(i, "expect.computes_of['%s'] %s, got %d"
 							% [ccid, want_c[ccid], got_c])
 			"drain_exhausted":
+				var drain_refusal := _flag_refusal(
+					expect["drain_exhausted"], "expect.drain_exhausted"
+				)
+				if drain_refusal != "":
+					_fail(i, drain_refusal)
+					continue
 				var want_drain: bool = expect["drain_exhausted"]
 				if ctx.drain_exhausted() != want_drain:
 					_fail(i, "expect.drain_exhausted %s, got %s"
@@ -928,13 +1064,29 @@ static func _as_int(v: Variant) -> int:
 	return int(v)
 
 
+## Dependency count, or -1 when this run carries no node by that id.
+##
+## The presence signal is RETURNED rather than folded into a zero
+## (#lzflagcoercion). A bare `return 0` here is lazily-go's `NodeValue(id)`
+## defect: it answers the same for a node with no dependencies and for a node
+## that does not exist, so every `dependencies_of` expectation of 0 was
+## satisfiable by a typo. That is not hypothetical in this corpus —
+## `merge_cell_acquires_no_dependency_edge.json` asserts `dependencies_of.acc`
+## is 0 and calls it THE assertion, and `acc` is a `Source`, which took the
+## fallback. Planting `"ghost": 0` into that same block left `make check` green
+## at exit 0: the fixture's whole point was riding on a branch that cannot fail.
 func _dependency_count(cell_id: String) -> int:
 	var c: Variant = cells.get(cell_id)
 	if c is LazilyComputed:
 		return (c as LazilyComputed)._deps.size()
 	if effects.has(cell_id):
 		return effects[cell_id]._deps.size()
-	return 0
+	if c != null:
+		# A `Source` has no dependencies BY CONSTRUCTION — the Source/Dependent
+		# partition the merge-feed fixtures exist to pin. THIS zero is a
+		# measurement of a node the run carries; the one below would not be.
+		return 0
+	return -1
 
 
 ## Records teardown order without changing it.
