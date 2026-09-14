@@ -92,6 +92,11 @@ MAKE_BIN="${MAKE:-make}"
 ROOT_TARGET="${CI_REACH_ROOT_TARGET:-check}"
 CONF="${CI_REACH_CONF:-scripts/ci-reach.conf}"
 
+# A command can be present in a workflow and still never gate a push or PR.
+# Pin triggers, filters, job activation and matrices before checking run bodies.
+python3 scripts/check-ci-activation.py "${CI_ACTIVATION_CONF:-scripts/ci-activation.conf}"
+python3 scripts/test-ci-activation.py
+
 if [ ! -f Makefile ]; then
 	echo "check-ci-reach: no Makefile in $(pwd)" >&2
 	exit 1
