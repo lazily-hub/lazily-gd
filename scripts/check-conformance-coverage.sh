@@ -408,6 +408,7 @@ fi
 # be classified in that file in the same change. An unrecognized array here is a
 # hard failure there, on purpose.
 IMPLEMENTED_FAMILY_PREFIXES=(
+  "durable-client/"
   "reactive-graph/"
   "egress/"
 )

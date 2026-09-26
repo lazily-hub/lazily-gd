@@ -35,3 +35,13 @@ static func latest_durable_projection(
 	generation: int,
 ) -> LazilyLatestDurableProjection:
 	return LazilyLatestDurableProjection.new(ctx, generation)
+
+
+## Construct a typed durable client over host-injected NATS-compatible callables.
+static func durable_client(
+	publish: Callable,
+	subscribe: Callable,
+	encode: Callable,
+	decode: Callable,
+) -> LazilyDurableClient:
+	return LazilyDurableClient.new(publish, subscribe, encode, decode)
