@@ -39,8 +39,8 @@ it silently ignored. Renaming or removing `IMPLEMENTED_FAMILY_PREFIXES` here is 
 cross-repo change: classify the replacement in `check-coverage-claims.mjs` in the
 same breath.
 
-Staged plan and the reasoning behind every decision below:
-`tasks/software/plan-lazily-gd.md` in the agent-loop workspace.
+The implementation notes below preserve the reasoning behind the binding's
+public compatibility and verification decisions.
 
 ## Minimum Godot version: 4.4
 

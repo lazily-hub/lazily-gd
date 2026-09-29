@@ -1,11 +1,8 @@
 ## `lazily` — reactive kernel for Godot, pure GDScript.
 ##
-## Phase 0 scaffold. The kernel (`Source` / `Computed` / `Effect` / `Context`)
-## lands in Phase 1; this file currently carries only the floor constants that
-## the harness and consumers check against.
-##
-## See `tasks/software/plan-lazily-gd.md` in the agent-loop workspace for the
-## staged plan and the decisions behind the Godot floor.
+## The public entry point exposes the engine floor and the currently shipped
+## durable helpers. Kernel types are globally named and may also be used
+## directly from consumer code.
 class_name Lazily
 extends RefCounted
 

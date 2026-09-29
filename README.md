@@ -64,9 +64,11 @@ break only in a consumer's project.
 
 ## Install
 
-Copy `addons/lazily/` into your project's `addons/` directory. That folder is
-the entire shipping surface — the tests, the fixture runner, and `project.godot`
-in this repo are development scaffolding and are not part of the addon.
+Install the `Lazily` Scripts addon from the Godot Asset Library, or copy
+`addons/lazily/` into your project's `addons/` directory. That folder is the
+entire shipping surface — the tests, the fixture runner, and `project.godot`
+in this repo are development scaffolding and are not part of the addon. Lazily
+is a runtime script library, so there is no editor plugin to enable afterward.
 
 ## Why GDScript, and not a GDExtension over lazily-cpp
 

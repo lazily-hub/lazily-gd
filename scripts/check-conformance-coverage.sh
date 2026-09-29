@@ -392,7 +392,7 @@ fi
 
 # Fixtures this binding deliberately does not replay YET. Each entry is a claim
 # that someone looked; shrinking this list is the work. lazily-gd is a staged
-# entry (see tasks/software/plan-lazily-gd.md), so at Phase 2 this is nearly the
+# entry from the original binding plan, so at Phase 2 this is nearly the
 # whole corpus — that is honest, not alarming. What matters is that it is
 # EXPLICIT: a fixture is either replayed or named here.
 #

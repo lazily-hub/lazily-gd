@@ -6,7 +6,7 @@
 # bash this difference is invisible locally and only appears in CI.
 SHELL := /bin/bash
 
-.PHONY: all check test load-graph conformance-coverage assertion-ordering-check ci-reach gdunit4 import clean
+.PHONY: all check test load-graph conformance-coverage assertion-ordering-check ci-reach asset-package-check gdunit4 import clean
 
 GODOT ?= godot
 REPORTS := build/reports
@@ -194,7 +194,10 @@ assertion-ordering-check:
 ci-reach:
 	./scripts/check-ci-reach.sh
 
-check: test load-graph conformance-coverage assertion-ordering-check ci-reach
+asset-package-check:
+	./scripts/check-asset-package.sh
+
+check: test load-graph conformance-coverage assertion-ordering-check ci-reach asset-package-check
 
 clean:
 	rm -rf build addons/gdUnit4

@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# GitHub's generated source archives are the package consumed by the Godot
+# Asset Library. Keep that archive limited to the installable addon surface.
+/**        export-ignore
+/addons    !export-ignore
+/addons/** !export-ignore
