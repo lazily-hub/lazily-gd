@@ -1,6 +1,7 @@
 # Godot
 .godot/
 *.translation
+*.import
 
 # Test dependency, installed by scripts/install-gdunit4.sh. Vendoring it would
 # ship a test framework to every consumer who installs addons/lazily/.
