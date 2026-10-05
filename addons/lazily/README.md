@@ -23,5 +23,5 @@ count.set_value(21)
 scope.dispose()
 ```
 
-Version: 0.2.0. Full documentation, tests, and source history are available at
+Version: 0.2.1. Full documentation, tests, and source history are available at
 https://github.com/lazily-hub/lazily-gd.
