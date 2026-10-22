@@ -425,12 +425,18 @@ IMPLEMENTED_FAMILY_PREFIXES=(
 # slots recycle after the final reference is dropped, and a retained disposed
 # LazilyCell prevents its slot from being reassigned.
 #
-# Kept in the MULTI-LINE form even while empty. lazily-spec's
-# check-coverage-claims.mjs reads this array by scanning from `NAME=(` to the
-# next line beginning with `)`, so the one-line `KNOWN_UNCOVERED=()` spelling
-# has no terminator to find and the read runs on into whatever array closes
-# next — a silently wrong gap ledger, in the guard whose whole job is to make
-# gaps visible.
+# Capability exclusions are a separate, scenario-level contract. A broad
+# `reactive-graph/` implementation claim neither grants nor hides this capability;
+# lazily-spec reads this exact top-level multiline array statically.
+UNSUPPORTED_CAPABILITIES=(
+  "recycled_node_ids"
+)
+
+# Kept in the MULTI-LINE form. lazily-spec's check-coverage-claims.mjs reads this
+# array by scanning from `NAME=(` to the next line beginning with `)`, so the
+# one-line `KNOWN_UNCOVERED=()` spelling has no terminator to find and the read
+# runs on into whatever array closes next — a silently wrong gap ledger, in the
+# guard whose whole job is to make gaps visible.
 KNOWN_UNCOVERED=(
 	# Both fixtures require `recycled_node_ids`. This object-backed binding has
 	# generation-tagged ObjectDB ids but no independently reusable public node-id

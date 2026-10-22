@@ -1,5 +1,11 @@
 name: CI
 
+env:
+  # Human-readable release plus its immutable resolution. The explicit commit
+  # check makes a moved tag fail closed instead of changing the qualified corpus.
+  LAZILY_SPEC_TAG: v0.43.0
+  LAZILY_SPEC_COMMIT: 4b34879b26566a0616b97cf661ac4f1a23762af6
+
 on:
   push:
     branches: [main]
@@ -24,8 +30,11 @@ jobs:
           repository: lazily-hub/lazily-spec
           # Immutable corpus baseline for the capability classification below.
           # Advance this only with the runner/coverage ledger in the same change.
-          ref: v0.43.0
+          ref: ${{ env.LAZILY_SPEC_TAG }}
           path: lazily-spec
+
+      - name: Verify lazily-spec release pin
+        run: test "$(git -C lazily-spec rev-parse HEAD)" = "$LAZILY_SPEC_COMMIT"
 
       # Pinned to the DECLARED FLOOR (4.4), not to latest. The floor is what
       # consumers are promised; running CI on a newer engine would let a 4.5+
