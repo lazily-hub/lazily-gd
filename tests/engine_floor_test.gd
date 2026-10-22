@@ -85,6 +85,31 @@ func test_instance_ids_are_generational_not_monotonic() -> void:
 	).is_greater(count / 2)
 
 
+## The stale-handle fixtures require a successor to reuse the stale node's
+## allocator slot while the stale handle remains callable. That state cannot be
+## constructed with this object-backed API: the public handle IS the RefCounted
+## node, and retaining it keeps its ObjectDB slot occupied even after Lazily
+## disposal. This pins the capability exclusion recorded by the coverage ledger.
+func test_retained_stale_handle_prevents_slot_reuse() -> void:
+	var ctx := LazilyContext.new()
+	var stale := ctx.source(1)
+	var stale_slot := stale.get_instance_id() & 0xFFFFFFFF
+	stale.dispose()
+
+	var same_slot_successors := 0
+	var attempts := 4096
+	for i in attempts:
+		var successor := ctx.source(i)
+		if (successor.get_instance_id() & 0xFFFFFFFF) == stale_slot:
+			same_slot_successors += 1
+		successor.dispose()
+		successor = null
+
+	assert_int(same_slot_successors).override_failure_message(
+		"a live stale RefCounted handle's ObjectDB slot was reassigned to a successor"
+	).is_equal(0)
+
+
 func test_addon_does_not_depend_on_this_project() -> void:
 	# What ships is addons/lazily/, dropped into a consumer's project. If the
 	# addon ever reads a project setting defined in THIS project.godot, it works

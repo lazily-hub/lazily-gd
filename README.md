@@ -4,8 +4,10 @@ Pure-GDScript binding of [lazily](https://github.com/lazily-hub/lazily-spec),
 shipped as a Godot addon.
 
 > **Status: staged binding with canonical replay.** The cell kernel is implemented, and
-> **all 21 canonical `reactive-graph` fixtures** replay against it with no named
-> excuses. The detail row `Reactive graph` is `✅` for `GDScript`; the FAMILY
+> **20 of 22 canonical `reactive-graph` fixtures** replay against it. The two
+> remaining fixtures require a reusable public node-id slot; GDScript handles
+> are RefCounted nodes whose ObjectDB slot stays occupied while the stale handle
+> is retained, so both are explicit capability exclusions. The FAMILY
 > roll-up below is still `~`, because the family also holds the thread-safe and
 > async contexts (`—`) and merge algebra (`~`, pending a `collections/` fixture).
 > The `LatestDurableProjectionCore` egress fixture also replays against the pure

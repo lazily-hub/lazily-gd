@@ -7,9 +7,10 @@ independent design: when this repo and
 and this repo is the finding.
 
 **Status: Phase 2 (conformance runner).** The cell kernel is implemented under
-`addons/lazily/cell/`, and the conformance runner replays **all 21 canonical
-`reactive-graph` fixtures**. `KNOWN_UNCOVERED` is empty — every fixture in the
-one family this binding claims is replayed, not excused.
+`addons/lazily/cell/`, and the conformance runner replays **20 of 22 canonical
+`reactive-graph` fixtures**. The two `recycled_node_ids` fixtures are explicit
+capability exclusions: this object-backed API cannot retain a callable stale
+RefCounted handle while reassigning its still-live ObjectDB slot to a successor.
 
 `GDScript` is the 10th column in `lazily-spec/coverage.json`. The detail row
 `reactive-graph` is `✅`; the Reactive-graph FAMILY roll-up stays `~`, because
@@ -156,8 +157,8 @@ survives that perturbation is not replaying anything.
 
 ### The bulk vocabulary, and what it actually pins here
 
-`fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle` build subscribers
-as **Effects, not derived cells**. `churn_returns_to_baseline` asserts
+`fanout` / `churn` / `dispose_fanout` build subscribers as **Effects, not derived
+cells**. `churn_returns_to_baseline` asserts
 `observed_count` on a publish, and in a lazy binding only a sink observes a
 publish without being pulled — a `Computed` subscriber satisfies every degree
 assertion in both fixtures while the propagation assertion reads 0, which is the
@@ -171,12 +172,13 @@ Both fixtures were measured against kernel mutations rather than assumed live:
 - `Computed._detach()` made a no-op → `recycled_id_inherits_nothing` reddens
   alongside four already-replayed fixtures.
 
-`dispose_stale_handle` is a different case and worth stating plainly: it is
-**structurally satisfied** here, not discriminating. Handles in this binding are
-`RefCounted` references, which is one of the two outs the fixture's own note
-names, so disposal through a stale one cannot reach an unrelated node. The
-runner still CHECKS the declared `handle_kind` against the handle it recorded, so
-a runner that quietly disposed something else is caught.
+`dispose_stale_handle` is a different case and worth stating plainly: it is not
+a replay claim here. Handles in this binding are `RefCounted` nodes. Retaining
+one keeps its ObjectDB slot occupied, so the runner cannot both invoke a stale
+handle and prove the fixture's required same-slot successor. Both fixtures that
+require `recycled_node_ids` therefore live in `KNOWN_UNCOVERED`, and
+`test_retained_stale_handle_prevents_slot_reuse` measures the exclusion instead
+of treating a structurally safe no-op as conformance.
 
 The same goes for the "recycled id" half. Godot's ObjectDB is a free list over
 slots with a generation tag — measured in

@@ -32,11 +32,12 @@ const REPLAYED := [
 	"reactive-graph/merge_per_settled_cone_not_per_write.json",
 	"reactive-graph/merge_feed_through_a_formula_coalesces.json",
 	"reactive-graph/exact_fold_paths_stay_exact.json",
-	# `fanout` / `churn` / `dispose_fanout` / `dispose_stale_handle`: bulk
-	# subscribe-unsubscribe vocabulary, plus disposal through a handle whose node
-	# is already gone.
+	# `fanout` / `churn` / `dispose_fanout`: bulk subscribe-unsubscribe vocabulary.
+	# The two fixtures requiring allocator-slot reuse are capability-excluded in
+	# `scripts/check-conformance-coverage.sh`: a retained RefCounted handle keeps
+	# its ObjectDB slot live, so this binding cannot both retain that handle and
+	# prove that a successor reused its slot.
 	"reactive-graph/churn_returns_to_baseline.json",
-	"reactive-graph/recycled_id_inherits_nothing.json",
 ]
 
 

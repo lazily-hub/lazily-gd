@@ -417,10 +417,13 @@ IMPLEMENTED_FAMILY_PREFIXES=(
 # entries that must carry a reason, because their family is one this binding
 # claims to support.
 #
-# EMPTY as of the bulk-op landing: every canonical `reactive-graph/` fixture is
-# replayed. An empty list is not a licence to stop naming gaps — the next
-# unreplayed fixture in an implemented family belongs here with a reason, and the
-# loop below still refuses one that is neither replayed nor named.
+# Capability-gated fixtures are named here when this binding cannot truthfully
+# satisfy their prerequisite. Godot ObjectDB does recycle allocator slots, but a
+# GDScript handle is the RefCounted node itself. Retaining the stale handle keeps
+# that ObjectDB slot occupied, so no successor can reuse it while the stale
+# handle remains callable. `tests/engine_floor_test.gd` measures both halves:
+# slots recycle after the final reference is dropped, and a retained disposed
+# LazilyCell prevents its slot from being reassigned.
 #
 # Kept in the MULTI-LINE form even while empty. lazily-spec's
 # check-coverage-claims.mjs reads this array by scanning from `NAME=(` to the
@@ -429,6 +432,11 @@ IMPLEMENTED_FAMILY_PREFIXES=(
 # next — a silently wrong gap ledger, in the guard whose whole job is to make
 # gaps visible.
 KNOWN_UNCOVERED=(
+	# Both fixtures require `recycled_node_ids`. This object-backed binding has
+	# generation-tagged ObjectDB ids but no independently reusable public node-id
+	# layer, so replay could not establish `recycled_id_confirmed: true`.
+	"reactive-graph/recycled_id_inherits_nothing.json"
+	"reactive-graph/stale_effect_handle_cannot_remove_recycled_source.json"
   # Replay-equivalence proof (`lazily-spec/docs/replay-equivalence.md`) is an
   # optional (MAY) coverage row and lazily-py is the reference implementation;
   # this binding has no harness yet, so it opens none of the three. Building one
