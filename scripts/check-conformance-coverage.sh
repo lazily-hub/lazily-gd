@@ -456,6 +456,10 @@ KNOWN_UNCOVERED=(
   "egress/egress_inflight_window.json"
   "egress/egress_ordered_ack.json"
   "egress/egress_retry_budget.json"
+  # Generic keyed effect compare-and-swap (`EffectCasCore`, `#lzeffectcas`,
+  # lazily-spec v0.46.0+). The coverage row marks GDScript `—`: this binding has
+  # no EffectCasCore yet. Implementing it is what removes this entry.
+  "egress/effect_cas.json"
 )
 
 MANIFEST="${LAZILY_CONFORMANCE_MANIFEST:-build/conformance-fixtures-loaded.txt}"
