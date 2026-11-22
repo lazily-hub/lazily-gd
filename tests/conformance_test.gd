@@ -38,6 +38,8 @@ const REPLAYED := [
 	# its ObjectDB slot live, so this binding cannot both retain that handle and
 	# prove that a successor reused its slot.
 	"reactive-graph/churn_returns_to_baseline.json",
+	# `effect.cleanup`: a body may return a cleanup or nothing (`#lzeffectvoid`).
+	"reactive-graph/effect_cleanup_is_optional.json",
 ]
 
 
@@ -113,6 +115,26 @@ func test_unknown_shape_fails_closed() -> void:
 	assert_str(empty.run({"kind": "ReactiveGraph", "shape": "steps", "steps": []})[0]).contains(
 		"replaying nothing must not report conformance"
 	)
+
+
+## An `effect` op's `cleanup` value this runner does not model fails closed
+## (`#lzeffectvoid`). Runner bookkeeping, so synthetic input again: defaulting an
+## unknown value to `every_run` would replay a fixture other than the one on disk
+## and report it conformant.
+func test_unknown_effect_cleanup_fails_closed() -> void:
+	var runner := LazilyReactiveGraphRunner.new()
+	var fails := runner.run({
+		"kind": "ReactiveGraph",
+		"shape": "steps",
+		"steps": [
+			{"op": {"type": "cell", "id": "a", "value": 1}},
+			{"op": {"type": "effect", "id": "e", "reads": ["a"], "cleanup": "sometimes"}},
+		],
+	})
+	assert_int(fails.size()).override_failure_message(
+		"an unknown effect cleanup replayed instead of failing: %s" % [fails]
+	).is_equal(1)
+	assert_str(fails[0]).contains("unknown cleanup \"sometimes\"")
 
 
 func test_replays_every_claimed_fixture() -> void:

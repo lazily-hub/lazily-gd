@@ -7,7 +7,7 @@ independent design: when this repo and
 and this repo is the finding.
 
 **Status: Phase 2 (conformance runner).** The cell kernel is implemented under
-`addons/lazily/cell/`, and the conformance runner replays **20 of 22 canonical
+`addons/lazily/cell/`, and the conformance runner replays **21 of 23 canonical
 `reactive-graph` fixtures**. The two `recycled_node_ids` fixtures are explicit
 capability exclusions: this object-backed API cannot retain a callable stale
 RefCounted handle while reassigning its still-live ObjectDB slot to a successor.

@@ -8,11 +8,18 @@
 ## An Effect is created through a `LazilyScope` and nowhere else. Its only strong
 ## owner is that scope: back-edges are weak, so an Effect the caller drops would
 ## otherwise be collected mid-graph and silently stop running.
+##
+## The body MAY return a cleanup `Callable`; returning nothing (`null`) means no
+## cleanup. Each run decides afresh: the cleanup the most recent run returned is
+## called once before the next run and once on dispose, and a run that returns
+## none leaves nothing outstanding. (`effect_cleanup_is_optional.json`)
 class_name LazilyEffect
 extends LazilyCell
 
 var _fn: Callable
 var _deps: Array[LazilyCell] = []
+## The cleanup the most recent run returned, or an empty `Callable` for none.
+var _cleanup := Callable()
 
 
 func _init(ctx: LazilyContext, fn: Callable) -> void:
@@ -39,9 +46,28 @@ func run() -> void:
 	if _disposed:
 		return
 	_detach()
+	_run_cleanup()
 	var compute := LazilyCompute.new(self, _ctx)
-	_fn.call(compute)
+	var returned: Variant = _fn.call(compute)
 	_deps = compute._deps
+	if returned is Callable and (returned as Callable).is_valid():
+		_cleanup = returned
+
+
+func dispose() -> void:
+	if _disposed:
+		return
+	super()
+	_run_cleanup()
+
+
+## Call the outstanding cleanup at most once: the slot is cleared BEFORE the
+## call, so a run that returns none cannot leave a stale cleanup to re-invoke.
+func _run_cleanup() -> void:
+	var c := _cleanup
+	_cleanup = Callable()
+	if c.is_valid():
+		c.call()
 
 
 func _detach() -> void:

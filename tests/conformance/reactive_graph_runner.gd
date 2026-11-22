@@ -561,7 +561,8 @@ func _apply(op: Dictionary, i: int) -> void:
 				cleanup_order.append(op["id"])
 				(victim as LazilyCell).dispose()
 			elif effects.has(op["id"]):
-				cleanup_order.append(op["id"])
+				# The effect books itself through its own cleanup, if its last run
+				# returned one (`effect_cleanup_is_optional.json`).
 				effects[op["id"]].dispose()
 			else:
 				_fail(i, "dispose names unknown id '%s'" % op["id"])
@@ -805,9 +806,33 @@ func _policy_of(op: Dictionary, i: int) -> LazilyMergePolicy:
 	return LazilyMergePolicy.sum()
 
 
+## What an `effect` op's body returns from each run (`#lzeffectvoid`).
+##
+## Absent or `every_run`: a cleanup from every run. `none`: nothing, from every
+## run. `alternate`: a cleanup from odd-numbered runs (the run at creation is run
+## 1) and nothing from even ones. An unknown value fails closed — defaulting it
+## would replay a fixture other than the one on disk.
+const _CLEANUP_SHAPES := ["every_run", "none", "alternate"]
+
+
+static func _returns_cleanup(shape: String, nth_run: int) -> bool:
+	match shape:
+		"none":
+			return false
+		"alternate":
+			return nth_run % 2 == 1
+	return true
+
+
 func _make_effect(op: Dictionary, i: int) -> void:
 	var id: String = op["id"]
 	var reads: Array = op.get("reads", [])
+	var raw_shape: Variant = op.get("cleanup", "every_run")
+	if typeof(raw_shape) != TYPE_STRING or not _CLEANUP_SHAPES.has(raw_shape):
+		_fail(i, "effect '%s' declares unknown cleanup %s — this runner models %s"
+			% [id, JSON.stringify(raw_shape), _CLEANUP_SHAPES])
+		return
+	var shape: String = raw_shape
 	var writes_own_cone: String = op.get("writes_own_cone", "")
 	var merges_into: String = op.get("merges_into", "")
 	var sc: String = op.get("scope", "")
@@ -840,7 +865,14 @@ func _make_effect(op: Dictionary, i: int) -> void:
 	# creation — which the fixture explicitly expects not to happen
 	# (`drain_exhausted: false` immediately after the effect op).
 	var established := [false]
-	var e := owner.effect(func(k: LazilyCompute) -> void:
+	# Per-effect run counter, inside the body the kernel calls, so `alternate`
+	# counts the runs that actually happened rather than the runner's intent.
+	var runs_seen := [0]
+	# Untyped on purpose: the body returns a cleanup `Callable` or NOTHING. A bare
+	# `return` is this binding's idiomatic "no cleanup" — never a no-op Callable,
+	# which would be observationally identical and test nothing.
+	var e := owner.effect(func(k: LazilyCompute):
+		runs_seen[0] += 1
 		observed.append(id)
 		effect_runs[id] = int(effect_runs.get(id, 0)) + 1
 		var total := 0
@@ -861,11 +893,19 @@ func _make_effect(op: Dictionary, i: int) -> void:
 			# is that the drain reports exhaustion, not that it settles.
 			var target := cells[writes_own_cone] as LazilySource
 			target.set_value(_as_int(target.peek()) + 1)
-		established[0] = true)
+		established[0] = true
+		if not _returns_cleanup(shape, runs_seen[0]):
+			return
+		# The kernel calls this; `cleanup_order` is booked here and nowhere else
+		# for an effect, so the ledger shows the cleanups that really ran.
+		return func() -> void: cleanup_order.append(id))
 	effects[id] = e
 	_remember_handle(id, e)
 	effect_scope_of[id] = sc
-	_record_teardown_of(owner, id, e)
+	# NOT wrapped in a `_CleanupRecorder`: an effect's entry in `cleanup_order` is
+	# its real cleanup, called by the kernel on rerun and on dispose. Booking its
+	# teardown here as well would double it, and would book an effect whose last
+	# run returned no cleanup.
 
 
 ## Teardown order is observed through the scope's member list, so the member
@@ -987,7 +1027,9 @@ func _check(expect: Dictionary, op: Dictionary, i: int) -> void:
 				var want_order: Array = expect["cleanup_order"]
 				if cleanup_order != Array(want_order):
 					_fail(i, "expect.cleanup_order %s, got %s" % [want_order, cleanup_order])
-				cleanup_order = []
+				# Cumulative from the start of the replay, never reset here: the
+				# corpus pins the whole order at every step, and a reset would also
+				# detach every recorder still holding the old array.
 			"observed_by":
 				var want_obs: Array = expect["observed_by"]
 				var got_obs := observed.duplicate()
