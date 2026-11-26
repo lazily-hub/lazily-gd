@@ -283,3 +283,9 @@ reads like a broken framework rather than a missing step.
 
 Commit and push completed work at the end of every turn that changed code,
 tests, docs, or CI.
+
+<!-- tsift:code-navigation v=0.1.110 -->
+## Code Navigation
+
+Use the repository tsift skill at [`.agents/skills/tsift/SKILL.md`](.agents/skills/tsift/SKILL.md) for code search, source reading, call graphs, diffs, logs, and test output.
+<!-- /tsift:code-navigation -->
