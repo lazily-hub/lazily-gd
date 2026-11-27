@@ -411,6 +411,7 @@ IMPLEMENTED_FAMILY_PREFIXES=(
   "durable-client/"
   "reactive-graph/"
   "egress/"
+  "view/"
 )
 
 # Fixtures in an IMPLEMENTED family that are still not replayed. These are the
