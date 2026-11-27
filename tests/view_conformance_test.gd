@@ -26,14 +26,32 @@ func test_view_conformance() -> void:
 	assert_int(cases.size()).is_greater(0)
 	for scenario: Dictionary in cases:
 		var view := LazilyView.install(scenario["view"])
-		assert_bool(view._ctx == null).override_failure_message(
+		assert_bool(not view.is_installed()).override_failure_message(
 			"%s must be rejected" % scenario.get("name", "")
 		).is_true()
 
 
+func test_view_rejects_chart_features_outside_the_supported_subset() -> void:
+	var document := {
+		"id": "chart",
+		"root": "root",
+		"signals": {},
+		"nodes": {"root": {"role": "region"}},
+		"chart": {
+			"initial": "parallel",
+			"states": {
+				"parallel": {"parallel": true},
+				"left": {"parent": "parallel"},
+				"right": {"parent": "parallel"},
+			},
+		},
+	}
+	assert_bool(LazilyView.install(document).is_installed()).is_false()
+
+
 func _replay(fixture_name: String, fixture: Dictionary) -> void:
 	var view := LazilyView.install(fixture["view"])
-	assert_bool(view._ctx != null).override_failure_message("%s install" % fixture_name).is_true()
+	assert_bool(view.is_installed()).override_failure_message("%s install" % fixture_name).is_true()
 	_same("%s signals" % fixture_name, view.signals_json(), fixture["signals"])
 	_same("%s expressions" % fixture_name, view.expressions_json(), fixture["expressions"])
 	_same("%s layout" % fixture_name, view.layout_json(), fixture["layout"])
