@@ -3,8 +3,8 @@ name: CI
 env:
   # Human-readable release plus its immutable resolution. The explicit commit
   # check makes a moved tag fail closed instead of changing the qualified corpus.
-  LAZILY_SPEC_TAG: v0.47.0
-  LAZILY_SPEC_COMMIT: e3bd642ea955325a4f27b73c454fa5a2c9496b15
+  LAZILY_SPEC_TAG: v0.48.0
+  LAZILY_SPEC_COMMIT: cf8ce4c4e84af73aeb73e1ce6426ecedfcfb7727
 
 on:
   push:
